@@ -1,0 +1,26 @@
+[MASTER]
+# Allow single-letter and uppercase identifiers common in mathematical/scientific code
+# and disable checks that are too strict for this domain.
+
+[MESSAGES CONTROL]
+disable=
+    C0103,  # invalid-name (uppercase matrix names are standard in Kalman/scientific code)
+    C0114,  # missing-module-docstring
+    C0115,  # missing-class-docstring
+    C0116,  # missing-function-docstring
+    C0413,  # wrong-import-position (needed for sys.path manipulation and matplotlib backend)
+    R0801,  # duplicate-code
+    W0718,  # broad-exception-caught
+    R1735,  # use-dict-literal
+
+
+[DESIGN]
+max-args=15
+max-positional-arguments=15
+max-locals=50
+max-attributes=12
+max-statements=80
+max-bool-expr=8
+
+[FORMAT]
+max-line-length=110
