@@ -237,10 +237,10 @@ def main():
     print(f"\n{'='*60}")
     print(f"  Target: {target_label}")
     print(f"{'='*60}")
-    print(f"\n[Data source]")
-    print(f"  SNCF Voyageurs — Monthly TGV punctuality")
-    print(f"  https://ressources.data.sncf.com/explore/dataset/regularite-mensuelle-tgv-aqst")
-    print(f"  Licence: Etalab 2.0\n")
+    print("\n[Data source]")
+    print("  SNCF Voyageurs — Monthly TGV punctuality")
+    print("  https://ressources.data.sncf.com/explore/dataset/regularite-mensuelle-tgv-aqst")
+    print("  Licence: Etalab 2.0\n")
     print(f"  {T} months  ({pd.Timestamp(dates[0]).strftime('%B %Y')} → "
           f"{pd.Timestamp(dates[-1]).strftime('%B %Y')})")
     print(f"  min={values.min():.1f}  max={values.max():.1f}  "
