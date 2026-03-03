@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Generated plots
+*.png
+
+# LaTeX build artefacts
+*.aux
+*.log
+*.out
+*.toc
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
