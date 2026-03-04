@@ -45,6 +45,84 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
+# Auto-configuration — BIC-based model selection
+# ---------------------------------------------------------------------------
+
+def _n_free_params(d: int) -> int:
+    """Free parameters for KalmanEM with m=1 observation dim."""
+    # F(d²) + H(d) + Q(d(d+1)/2) + R(1, diagonal) + mu0(d) + Sigma0(d(d+1)/2)
+    return d * d + d + d * (d + 1) // 2 + 1 + d + d * (d + 1) // 2
+
+
+def _auto_configure(dates, values, stl_period: int) -> dict:
+    """
+    Quick BIC-based selection of latent dim d, STL usage, and n_iter.
+    Runs 30 EM iterations for d = 1..4 on a standardised version of the data.
+    """
+    n = len(values)
+    Y = values.copy().astype(float)
+    seasonality_strength = 0.0
+    use_stl = False
+
+    # --- Seasonality strength ---
+    if stl_period > 1 and _HAS_STL and n >= 2 * stl_period + 1:
+        try:
+            trend_s, seas_s, resid_s = stl_decompose(dates, values, stl_period)
+            detrended = values - trend_s.values
+            var_dt = np.var(detrended)
+            var_res = np.var(resid_s.values)
+            seasonality_strength = float(max(0.0, 1.0 - var_res / (var_dt + 1e-10)))
+            use_stl = seasonality_strength > 0.3
+            if use_stl:
+                Y = resid_s.values.astype(float)
+        except Exception:
+            pass
+
+    # --- Standardise ---
+    mu_y, std_y = float(np.nanmean(Y)), float(np.nanstd(Y))
+    Y_std = ((Y - mu_y) / std_y).reshape(-1, 1) if std_y > 0 else Y.reshape(-1, 1)
+    T = len(Y_std)
+
+    # --- BIC for d = 1..4 ---
+    QUICK_ITERS = 30
+    bic_scores: dict[int, float] = {}
+    lls_by_d:   dict[int, list]  = {}
+
+    for d in [1, 2, 3, 4]:
+        try:
+            m = KalmanEM(d=d, n_iter=QUICK_ITERS, tol=1e-4,
+                         diagonal_R=True, diagonal_Q=False,
+                         n_restarts=1, verbose=False)
+            m.fit(Y_std, standardise=False)
+            ll = m.log_liks_[-1] if m.log_liks_ else -np.inf
+            bic = -2.0 * ll + np.log(T) * _n_free_params(d)
+            bic_scores[d] = float(bic)
+            lls_by_d[d]   = m.log_liks_
+        except Exception:
+            bic_scores[d] = float("inf")
+
+    best_d = min(bic_scores, key=bic_scores.get)
+
+    # --- Suggest n_iter ---
+    converged_at = len(lls_by_d.get(best_d, []))
+    if converged_at < QUICK_ITERS:
+        raw = max(50, converged_at * 3)
+    else:
+        raw = 200
+    suggested_n_iter = int(round(raw / 10) * 10)
+    suggested_n_iter = max(20, min(500, suggested_n_iter))
+
+    return {
+        "use_stl":              use_stl,
+        "stl_period":           stl_period,
+        "d":                    best_d,
+        "n_iter":               suggested_n_iter,
+        "bic_scores":           bic_scores,
+        "seasonality_strength": seasonality_strength,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Dataset presets — recommended settings per known dataset file
 # ---------------------------------------------------------------------------
 
@@ -585,6 +663,38 @@ def sidebar() -> dict | None:
         st.sidebar.error(f"Cannot parse series: {e}")
         return None
 
+    suggested_period = infer_stl_period(dates)
+
+    # --- Auto-configure: BIC-based model selection (runs once per series) ---
+    autoconf_key = f"{val_col}_{len(values)}_{suggested_period}"
+    if st.session_state.get("_autoconf_key") != autoconf_key:
+        with st.sidebar.spinner("🔍 Analysing dataset…"):
+            acfg = _auto_configure(dates, values, suggested_period)
+        st.session_state["_autoconf"]        = acfg
+        st.session_state["_autoconf_key"]    = autoconf_key
+        st.session_state["sb_use_stl"]       = acfg["use_stl"]
+        st.session_state["sb_stl_period"]    = acfg["stl_period"]
+        st.session_state["sb_d"]             = acfg["d"]
+        st.session_state["sb_n_iter"]        = acfg["n_iter"]
+        st.session_state["_preset_applied"]  = False
+
+    acfg = st.session_state.get("_autoconf", {})
+    if acfg:
+        bic    = acfg.get("bic_scores", {})
+        best_d = acfg.get("d", "?")
+        s_str  = acfg.get("seasonality_strength", 0.0)
+        with st.sidebar.expander("🔍 Auto-configuration", expanded=False):
+            st.caption(f"Seasonality strength: **{s_str:.0%}**")
+            st.caption(f"STL: {'✅ enabled' if acfg.get('use_stl') else '❌ disabled'} · "
+                       f"Recommended d: **{best_d}**")
+            if bic:
+                bic_df = pd.DataFrame({
+                    "d":    list(bic.keys()),
+                    "BIC":  [f"{v:.1f}" if not np.isinf(v) else "—" for v in bic.values()],
+                    "":     ["✓" if d == best_d else "" for d in bic.keys()],
+                })
+                st.dataframe(bic_df, use_container_width=True, hide_index=True)
+
     # --- Preprocessing ---
     st.sidebar.subheader("Preprocessing")
     stl_available = _HAS_STL
@@ -596,7 +706,6 @@ def sidebar() -> dict | None:
              if stl_available else "statsmodels not installed.",
     )
 
-    suggested_period = infer_stl_period(dates)
     stl_period = 1
     if use_stl:
         stl_period = st.sidebar.number_input(
