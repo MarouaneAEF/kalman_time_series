@@ -135,15 +135,10 @@ def stl_decompose(dates, values, period: int):
     return res.trend, res.seasonal, res.resid
 
 
-def project_seasonal(dates_hist, seasonal_hist, dates_fore) -> np.ndarray:
-    """Project historical seasonal pattern to forecast dates by day-of-period."""
-    hist_ts  = pd.to_datetime(dates_hist)
-    fore_ts  = pd.to_datetime(dates_fore)
-    # Use day-of-year for daily; month for monthly; generically modulo period index
-    doy_hist = hist_ts.dayofyear
-    doy_fore = fore_ts.dayofyear
-    profile  = pd.Series(seasonal_hist, index=doy_hist).groupby(level=0).mean()
-    return np.array([profile.get(d, float(profile.mean())) for d in doy_fore])
+def project_seasonal(seasonal_hist, n_fore: int, period: int) -> np.ndarray:
+    """Tile the last complete seasonal cycle forward for n_fore steps."""
+    cycle = np.array(seasonal_hist[-period:])   # shape (period,)
+    return np.array([cycle[i % period] for i in range(n_fore)])
 
 # ---------------------------------------------------------------------------
 # Metrics
@@ -209,6 +204,7 @@ def run_pipeline(dates, values, cfg: dict) -> dict:
             "trend":    trend_all.values,
             "seasonal": seas_all.values,
             "resid":    resid_all.values,
+            "period":   period,
         }
 
         Y_train = resid_train.reshape(-1, 1)
@@ -821,7 +817,7 @@ Welcome to **Forecaster**, a time series prediction app powered by the
             mu_future_resid     = y_fore_all_raw[n_test:, 0]
             std_future          = np.sqrt(np.abs(y_fore_all_var[n_test:, 0]))
             if stl is not None:
-                seas_future  = project_seasonal(dates_all, stl["seasonal"], dates_future)
+                seas_future  = project_seasonal(stl["seasonal"], n_fore, stl["period"])
                 trend        = stl["trend"]
                 slope        = (trend[-1] - trend[max(0, len(trend) - 10)]) / min(10, len(trend) - 1)
                 trend_future = trend[-1] + slope * np.arange(1, n_fore + 1)
