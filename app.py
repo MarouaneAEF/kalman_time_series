@@ -671,7 +671,7 @@ def sidebar() -> dict | None:
     # --- Auto-configure: BIC-based model selection (runs once per series) ---
     autoconf_key = f"{val_col}_{len(values)}_{suggested_period}"
     if st.session_state.get("_autoconf_key") != autoconf_key:
-        with st.sidebar.spinner("🔍 Analysing dataset…"):
+        with st.spinner("🔍 Analysing dataset…"):
             acfg = _auto_configure(dates, values, suggested_period)
         st.session_state["_autoconf"]        = acfg
         st.session_state["_autoconf_key"]    = autoconf_key
