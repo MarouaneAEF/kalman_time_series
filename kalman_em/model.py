@@ -49,7 +49,7 @@ class KalmanEM:
     # Fit
     # ------------------------------------------------------------------
 
-    def fit(self, Y, init_params=None, standardise=True):
+    def fit(self, Y, init_params=None, standardise=True, callback=None):
         """
         Fit model parameters via EM.
 
@@ -89,6 +89,7 @@ class KalmanEM:
             diagonal_R=self.diagonal_R,
             n_restarts=self.n_restarts,
             verbose=self.verbose,
+            callback=callback,
         )
         return self
 

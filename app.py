@@ -159,7 +159,7 @@ def compute_metrics(y_true, y_pred, y_std, alpha=2.0) -> dict:
 # Pipeline
 # ---------------------------------------------------------------------------
 
-def run_pipeline(dates, values, cfg: dict) -> dict:
+def run_pipeline(dates, values, cfg: dict, callback=None) -> dict:
     """
     Full Kalman-EM pipeline.
 
@@ -213,7 +213,7 @@ def run_pipeline(dates, values, cfg: dict) -> dict:
         model = KalmanEM(d=cfg["d"], n_iter=cfg["n_iter"], tol=cfg["tol"],
                          diagonal_R=True, diagonal_Q=False,
                          n_restarts=cfg["n_restarts"], verbose=False)
-        model.fit(Y_train, standardise=True)
+        model.fit(Y_train, standardise=True, callback=callback)
 
         # One-step-ahead on test residuals
         pred_raw, var_raw = model.predict_one_step(Y_test, Y_context=Y_train)
@@ -232,7 +232,7 @@ def run_pipeline(dates, values, cfg: dict) -> dict:
         model = KalmanEM(d=cfg["d"], n_iter=cfg["n_iter"], tol=cfg["tol"],
                          diagonal_R=True, diagonal_Q=False,
                          n_restarts=cfg["n_restarts"], verbose=False)
-        model.fit(Y_train, standardise=True)
+        model.fit(Y_train, standardise=True, callback=callback)
 
         pred_raw, var_raw = model.predict_one_step(Y_test, Y_context=Y_train)
         y_pred = pred_raw[:, 0]
@@ -712,14 +712,34 @@ Welcome to **Forecaster**, a time series prediction app powered by the
 
     # ---- Trigger pipeline ----
     if cfg["run"]:
-        with st.spinner("Running Kalman-EM pipeline…"):
-            try:
-                results = run_pipeline(cfg["dates"], cfg["values"], cfg)
-                st.session_state["results"] = results
-                st.session_state["val_col"] = cfg["val_col"]
-            except Exception as e:
-                st.error(f"Pipeline failed: {e}")
-                st.session_state.pop("results", None)
+        conv_slot = st.empty()
+
+        def _em_callback(i, n_iter, log_liks):
+            # Update every 5 iterations to avoid flooding re-renders
+            if i % 5 != 0 and i < n_iter - 1:
+                return
+            with conv_slot.container():
+                st.progress(
+                    min((i + 1) / n_iter, 1.0),
+                    text=f"EM iteration {i + 1}/{n_iter} · log-lik = {log_liks[-1]:.4f}",
+                )
+                if len(log_liks) > 1:
+                    st.line_chart(
+                        {"Log-likelihood": log_liks},
+                        height=160,
+                        use_container_width=True,
+                    )
+
+        try:
+            results = run_pipeline(cfg["dates"], cfg["values"], cfg,
+                                   callback=_em_callback)
+            conv_slot.empty()
+            st.session_state["results"] = results
+            st.session_state["val_col"] = cfg["val_col"]
+        except Exception as e:
+            conv_slot.empty()
+            st.error(f"Pipeline failed: {e}")
+            st.session_state.pop("results", None)
 
     results = st.session_state.get("results")
 

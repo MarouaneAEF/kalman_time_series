@@ -190,7 +190,8 @@ def _ensure_pd(A, eps=1e-6):
 
 def _single_em_run(Y, d, n_iter, tol,
                    init_params, update_F, update_H, update_Q, update_R,
-                   diagonal_Q, diagonal_R, min_var, rng, verbose):
+                   diagonal_Q, diagonal_R, min_var, rng, verbose,
+                   callback=None):
     """One complete EM run from a given initialisation."""
     F, H, Q, R, mu0, Sigma0 = _stable_init(Y, d, init_params, rng)
 
@@ -203,6 +204,9 @@ def _single_em_run(Y, d, n_iter, tol,
 
         if verbose and (i % 10 == 0 or i == n_iter - 1):
             print(f"  EM iter {i:4d} | log-lik = {ll:.4f}")
+
+        if callback is not None:
+            callback(i, n_iter, log_liks)
 
         if np.isnan(ll):
             print("  Warning: log-likelihood is NaN — stopping early.")
@@ -241,7 +245,7 @@ def run_em(Y, d, n_iter=200, tol=1e-5,
            update_Q=True, update_R=True,
            diagonal_Q=False, diagonal_R=True,
            n_restarts=1, min_var=1e-6,
-           verbose=True):
+           verbose=True, callback=None):
     """
     Full EM loop for Kalman filter parameter estimation.
 
@@ -273,7 +277,8 @@ def run_em(Y, d, n_iter=200, tol=1e-5,
     best_params, best_lls = _single_em_run(
         Y, d, n_iter, tol, init_params,
         update_F, update_H, update_Q, update_R,
-        diagonal_Q, diagonal_R, min_var, rng, verbose
+        diagonal_Q, diagonal_R, min_var, rng, verbose,
+        callback=callback,
     )
     best_ll = best_lls[-1] if best_lls else -np.inf
 
@@ -296,7 +301,8 @@ def run_em(Y, d, n_iter=200, tol=1e-5,
             params, lls = _single_em_run(
                 Y, d, n_iter, tol, rand_init,
                 update_F, update_H, update_Q, update_R,
-                diagonal_Q, diagonal_R, min_var, rng, verbose
+                diagonal_Q, diagonal_R, min_var, rng, verbose,
+                callback=callback,
             )
 
             ll = lls[-1] if lls else -np.inf
