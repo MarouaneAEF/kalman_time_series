@@ -323,6 +323,55 @@ def fig_backtest(dates_train, values_train, dates_test, values_test,
     return fig
 
 
+def _future_dates(dates, n: int) -> np.ndarray:
+    """Generate n future dates with the same median frequency as the series."""
+    last = pd.Timestamp(dates[-1])
+    gaps = np.diff(dates).astype("timedelta64[D]").astype(int)
+    step = max(1, int(np.median(gaps)))
+    return np.array(
+        [last + pd.Timedelta(days=i * step) for i in range(1, n + 1)],
+        dtype="datetime64[ns]",
+    )
+
+
+def fig_reconstruction_forecast(dates_all, values_all,
+                                 mu_smooth, var_smooth,
+                                 dates_fore, y_fore, y_fore_var,
+                                 val_col: str):
+    fig, ax = plt.subplots(figsize=(13, 5))
+    dt_all  = pd.to_datetime(dates_all)
+    dt_fore = pd.to_datetime(dates_fore)
+
+    std_smooth = np.sqrt(np.abs(var_smooth))
+    std_fore   = np.sqrt(np.abs(y_fore_var))
+
+    # Observed data
+    ax.plot(dt_all, values_all, color="gray", lw=1, alpha=0.55, label="Observed")
+
+    # Smoothed reconstruction [0, T]
+    ax.plot(dt_all, mu_smooth, color="steelblue", lw=1.6, label="Smoothed [0, T]")
+    ax.fill_between(dt_all, mu_smooth - 2*std_smooth, mu_smooth + 2*std_smooth,
+                    color="steelblue", alpha=0.18, label="±2σ smooth")
+
+    # Forecast [T+1, T+n]
+    ax.plot(dt_fore, y_fore, color="darkorange", lw=2, linestyle="--",
+            label="Forecast")
+    ax.fill_between(dt_fore, y_fore - 2*std_fore, y_fore + 2*std_fore,
+                    color="darkorange", alpha=0.22, label="±2σ forecast")
+
+    # Separator
+    ax.axvline(dt_fore[0], color="gray", linestyle=":", lw=1.2)
+
+    ax.set_ylabel(val_col)
+    ax.set_title(f"Kalman-EM — Reconstruction & Forecast — {val_col}")
+    ax.legend(loc="upper left", fontsize=9)
+    all_dates = np.concatenate([dates_all, dates_fore])
+    _fmt_date_axis(ax, all_dates)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
 def fig_loglik(log_liks):
     fig, ax = plt.subplots(figsize=(7, 3))
     ax.plot(log_liks, color="steelblue", lw=1.5, marker="o", markersize=2)
@@ -489,6 +538,13 @@ def sidebar() -> dict | None:
         help="Run EM multiple times with different initialisations and keep the best result.",
     )
 
+    st.sidebar.subheader("Forecast")
+    n_forecast = st.sidebar.slider(
+        "Forecast horizon",
+        min_value=5, max_value=365, value=30, step=5,
+        help="Number of steps to project beyond the last observation.",
+    )
+
     st.sidebar.divider()
     run_btn = st.sidebar.button("Run Analysis", type="primary", use_container_width=True)
 
@@ -506,6 +562,7 @@ def sidebar() -> dict | None:
         "test_ratio":  test_ratio,
         "tol":         tol,
         "n_restarts":  n_restarts,
+        "n_forecast":  n_forecast,
         "run":         run_btn,
     }
 
@@ -542,10 +599,11 @@ Welcome to **Forecaster**, a time series prediction app powered by the
         return
 
     # ---- Data preview (always visible once a file is loaded) ----
-    tab_raw, tab_pre, tab_bt, tab_params = st.tabs([
+    tab_raw, tab_pre, tab_bt, tab_fore, tab_params = st.tabs([
         "📊 Raw Data",
         "🔧 Preprocessing",
         "📈 Backtest",
+        "🔮 Reconstruction & Forecast",
         "🔬 Model Parameters",
     ])
 
@@ -620,6 +678,65 @@ Welcome to **Forecaster**, a time series prediction app powered by the
                 ),
                 use_container_width=True,
             )
+
+    # ---- Reconstruction & Forecast tab ----
+    with tab_fore:
+        if results is None:
+            st.info("Click **Run Analysis** in the sidebar to start.")
+        else:
+            model      = results["model"]
+            stl        = results["stl"]
+            dates_all  = np.concatenate([results["dates_train"], results["dates_test"]])
+            values_all = np.concatenate([results["values_train"], results["values_test"]])
+            n_fore     = cfg["n_forecast"]
+
+            # Input to the Kalman model (residuals if STL, raw otherwise)
+            Y_kal = stl["resid"].reshape(-1, 1) if stl is not None else values_all.reshape(-1, 1)
+
+            # Smoothed reconstruction on the full observed period
+            mu_s, var_s = model.smooth(Y_kal)
+            if stl is not None:
+                mu_smooth  = mu_s[:, 0] + stl["seasonal"] + stl["trend"]
+            else:
+                mu_smooth  = mu_s[:, 0]
+            var_smooth = var_s[:, 0]
+
+            # Future dates
+            dates_fore = _future_dates(dates_all, n_fore)
+
+            # Forecast n_fore steps beyond T
+            y_fore_raw, y_fore_var = model.forecast(Y_kal, n_steps=n_fore)
+            y_fore_resid = y_fore_raw[:, 0]
+            y_fore_var   = y_fore_var[:, 0]
+
+            if stl is not None:
+                seas_fore  = project_seasonal(dates_all, stl["seasonal"], dates_fore)
+                trend      = stl["trend"]
+                slope      = (trend[-1] - trend[max(0, len(trend)-10)]) / min(10, len(trend)-1)
+                trend_fore = trend[-1] + slope * np.arange(1, n_fore + 1)
+                y_fore     = y_fore_resid + seas_fore + trend_fore
+            else:
+                y_fore = y_fore_resid
+
+            st.pyplot(
+                fig_reconstruction_forecast(
+                    dates_all, values_all,
+                    mu_smooth, var_smooth,
+                    dates_fore, y_fore, y_fore_var,
+                    cfg["val_col"],
+                ),
+                use_container_width=True,
+            )
+
+            # Table of forecast values
+            with st.expander(f"Forecast values (next {n_fore} steps)"):
+                fore_df = pd.DataFrame({
+                    "Date":      pd.to_datetime(dates_fore).strftime("%Y-%m-%d"),
+                    "Forecast":  np.round(y_fore, 4),
+                    "Lower ±2σ": np.round(y_fore - 2*np.sqrt(np.abs(y_fore_var)), 4),
+                    "Upper ±2σ": np.round(y_fore + 2*np.sqrt(np.abs(y_fore_var)), 4),
+                })
+                st.dataframe(fore_df, use_container_width=True)
 
     # ---- Model parameters tab ----
     with tab_params:
