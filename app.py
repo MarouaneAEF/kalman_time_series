@@ -378,52 +378,65 @@ def _future_dates(dates, n: int) -> np.ndarray:
     )
 
 
-def fig_reconstruction_forecast(dates_all, values_all,
-                                 mu_reconst, std_reconst,
-                                 dates_fore, y_fore, std_fore,
-                                 val_col: str,
-                                 date_split=None):
+def fig_reconstruction_forecast(
+    dates_train, values_train,
+    mu_train, std_train,
+    dates_test, values_test,
+    mu_fore_test, std_fore_test,
+    dates_future, y_future, std_future,
+    val_col: str,
+):
     """
-    dates_all / values_all  : full observed series
-    mu_reconst / std_reconst: in-sample reconstruction (same length as dates_all)
-    dates_fore / y_fore / std_fore: forecast beyond the series
-    date_split              : optional datetime — vertical line separating train / test
+    Validation-first layout:
+      [0, T_train]  : observed train (line) + Kalman smooth (blue)
+      [T_train, T]  : observed test (dots) + multi-step forecast (red) — visual validation
+      [T, T+n_fore] : pure future forecast (red dashed) — no ground truth
     """
-    C_OBS   = "#2d2d2d"   # near-black for observed
-    C_RECON = "#2196F3"   # blue for reconstruction
-    C_FORE  = "#E53935"   # red for forecast
+    C_OBS   = "#2d2d2d"
+    C_RECON = "#2196F3"
+    C_FORE  = "#E53935"
 
     fig, ax = plt.subplots(figsize=(13, 5))
-    dt_all  = pd.to_datetime(dates_all)
-    dt_fore = pd.to_datetime(dates_fore)
+    dt_train  = pd.to_datetime(dates_train)
+    dt_test   = pd.to_datetime(dates_test)
+    dt_future = pd.to_datetime(dates_future)
 
-    # Observed data
-    ax.plot(dt_all, values_all, color=C_OBS, lw=1.2, alpha=0.7,
-            label="Observed", zorder=1)
+    # Observed — train as line, test as scatter dots (ground truth for validation)
+    ax.plot(dt_train, values_train, color=C_OBS, lw=1.2, alpha=0.7,
+            label="Observed (train)", zorder=1)
+    ax.scatter(dt_test, values_test, color=C_OBS, s=18, alpha=0.85, zorder=4,
+               label="Observed (test — ground truth)")
 
-    # In-sample reconstruction + uncertainty band
-    ax.fill_between(dt_all,
-                    mu_reconst - 2 * std_reconst,
-                    mu_reconst + 2 * std_reconst,
+    # Kalman smooth on train
+    ax.fill_between(dt_train,
+                    mu_train - 2 * std_train,
+                    mu_train + 2 * std_train,
                     color=C_RECON, alpha=0.15, label="±2σ reconstruction", zorder=2)
-    ax.plot(dt_all, mu_reconst, color=C_RECON, lw=1.8,
-            label="Reconstruction", zorder=3)
+    ax.plot(dt_train, mu_train, color=C_RECON, lw=1.8,
+            label="Reconstruction (smooth)", zorder=3)
 
-    # Forecast + uncertainty band
-    ax.fill_between(dt_fore,
-                    y_fore - 2 * std_fore,
-                    y_fore + 2 * std_fore,
+    # Multi-step forecast over test period (validation zone)
+    ax.fill_between(dt_test,
+                    mu_fore_test - 2 * std_fore_test,
+                    mu_fore_test + 2 * std_fore_test,
                     color=C_FORE, alpha=0.18, label="±2σ forecast", zorder=2)
-    ax.plot(dt_fore, y_fore, color=C_FORE, lw=2, linestyle="--",
-            label="Forecast", zorder=3)
+    ax.plot(dt_test, mu_fore_test, color=C_FORE, lw=2, linestyle="--",
+            label="Forecast (validation)", zorder=3)
+
+    # Pure future forecast
+    ax.fill_between(dt_future,
+                    y_future - 2 * std_future,
+                    y_future + 2 * std_future,
+                    color=C_FORE, alpha=0.10, zorder=2)
+    ax.plot(dt_future, y_future, color=C_FORE, lw=2, linestyle="--",
+            label="Forecast (future)", zorder=3)
 
     # Vertical separators
-    if date_split is not None:
-        ax.axvline(pd.Timestamp(date_split), color="#888", linestyle=":",
-                   lw=1.2, zorder=1, label="train | test")
-    ax.axvline(dt_fore[0], color=C_FORE, linestyle=":", lw=1.2, zorder=1)
+    ax.axvline(dt_test[0],   color="#888",  linestyle=":", lw=1.2, label="train | test")
+    ax.axvline(dt_future[0], color=C_FORE,  linestyle=":", lw=1.2, label="test | future")
 
-    # Anchor y-axis on the observed data — don't let wide forecast bands zoom out
+    # Anchor y-axis on observed data range only
+    values_all = np.concatenate([values_train, values_test])
     y_lo = float(np.nanmin(values_all))
     y_hi = float(np.nanmax(values_all))
     margin = 0.12 * (y_hi - y_lo) if y_hi > y_lo else 1.0
@@ -432,7 +445,7 @@ def fig_reconstruction_forecast(dates_all, values_all,
     ax.set_ylabel(val_col)
     ax.set_title(f"Kalman-EM — Reconstruction & Forecast — {val_col}")
     ax.legend(loc="upper left", fontsize=9)
-    all_dates = np.concatenate([dates_all, dates_fore])
+    all_dates = np.concatenate([dates_train, dates_test, dates_future])
     _fmt_date_axis(ax, all_dates)
     ax.grid(True, alpha=0.25)
     fig.tight_layout()
@@ -775,61 +788,66 @@ Welcome to **Forecaster**, a time series prediction app powered by the
             n_train      = len(values_train)
             n_fore       = cfg["n_forecast"]
 
-            # --- In-sample smooth: run on TRAIN only (model was fitted here) ---
+            n_test = len(values_test)
+
+            # --- Kalman smooth on TRAIN only ---
             Y_train_kal = (stl["resid"][:n_train].reshape(-1, 1)
                            if stl is not None
                            else values_train.reshape(-1, 1))
             mu_s, var_s = model.smooth(Y_train_kal)
             if stl is not None:
-                mu_train = mu_s[:, 0] + stl["seasonal"][:n_train] + stl["trend"][:n_train]
+                mu_train_plot = mu_s[:, 0] + stl["seasonal"][:n_train] + stl["trend"][:n_train]
             else:
-                mu_train = mu_s[:, 0]
-            std_train = np.sqrt(np.abs(var_s[:, 0]))
+                mu_train_plot = mu_s[:, 0]
+            std_train_plot = np.sqrt(np.abs(var_s[:, 0]))
 
-            # --- Test portion: reuse existing one-step-ahead predictions ---
-            mu_test  = results["y_pred"]
-            std_test = results["y_std"]
+            # --- Multi-step forecast from end of TRAIN → covers test + future ---
+            # This enables visual validation: forecast vs actual test dots
+            n_total_fore = n_test + n_fore
+            y_fore_all_raw, y_fore_all_var = model.forecast(Y_train_kal, n_steps=n_total_fore)
 
-            # --- Concatenate for full in-sample reconstruction ---
-            mu_reconst  = np.concatenate([mu_train,  mu_test])
-            std_reconst = np.concatenate([std_train, std_test])
-
-            # --- Forecast: filter through full series then project forward ---
-            Y_all_kal = (stl["resid"].reshape(-1, 1)
-                         if stl is not None
-                         else values_all.reshape(-1, 1))
-            dates_fore = _future_dates(dates_all, n_fore)
-            y_fore_raw, y_fore_var = model.forecast(Y_all_kal, n_steps=n_fore)
-            y_fore_resid = y_fore_raw[:, 0]
-            std_fore     = np.sqrt(np.abs(y_fore_var[:, 0]))
-
+            # Test portion of forecast (validation zone)
+            mu_fore_test_resid  = y_fore_all_raw[:n_test, 0]
+            std_fore_test       = np.sqrt(np.abs(y_fore_all_var[:n_test, 0]))
             if stl is not None:
-                seas_fore  = project_seasonal(dates_all, stl["seasonal"], dates_fore)
-                trend      = stl["trend"]
-                slope      = (trend[-1] - trend[max(0, len(trend) - 10)]) / min(10, len(trend) - 1)
-                trend_fore = trend[-1] + slope * np.arange(1, n_fore + 1)
-                y_fore     = y_fore_resid + seas_fore + trend_fore
+                mu_fore_test = (mu_fore_test_resid
+                                + stl["seasonal"][n_train:]
+                                + stl["trend"][n_train:])
             else:
-                y_fore = y_fore_resid
+                mu_fore_test = mu_fore_test_resid
+
+            # Future portion of forecast (no ground truth)
+            dates_future        = _future_dates(dates_all, n_fore)
+            mu_future_resid     = y_fore_all_raw[n_test:, 0]
+            std_future          = np.sqrt(np.abs(y_fore_all_var[n_test:, 0]))
+            if stl is not None:
+                seas_future  = project_seasonal(dates_all, stl["seasonal"], dates_future)
+                trend        = stl["trend"]
+                slope        = (trend[-1] - trend[max(0, len(trend) - 10)]) / min(10, len(trend) - 1)
+                trend_future = trend[-1] + slope * np.arange(1, n_fore + 1)
+                mu_future    = mu_future_resid + seas_future + trend_future
+            else:
+                mu_future = mu_future_resid
 
             st.pyplot(
                 fig_reconstruction_forecast(
-                    dates_all, values_all,
-                    mu_reconst, std_reconst,
-                    dates_fore, y_fore, std_fore,
+                    dates_train, values_train,
+                    mu_train_plot, std_train_plot,
+                    dates_test, values_test,
+                    mu_fore_test, std_fore_test,
+                    dates_future, mu_future, std_future,
                     cfg["val_col"],
-                    date_split=dates_test[0],
                 ),
                 use_container_width=True,
             )
 
-            # Table of forecast values
-            with st.expander(f"Forecast values (next {n_fore} steps)"):
+            # Table of forecast values (future only)
+            with st.expander(f"Forecast values (next {n_fore} steps beyond test)"):
                 fore_df = pd.DataFrame({
-                    "Date":      pd.to_datetime(dates_fore).strftime("%Y-%m-%d"),
-                    "Forecast":  np.round(y_fore, 4),
-                    "Lower ±2σ": np.round(y_fore - 2 * std_fore, 4),
-                    "Upper ±2σ": np.round(y_fore + 2 * std_fore, 4),
+                    "Date":      pd.to_datetime(dates_future).strftime("%Y-%m-%d"),
+                    "Forecast":  np.round(mu_future, 4),
+                    "Lower ±2σ": np.round(mu_future - 2 * std_future, 4),
+                    "Upper ±2σ": np.round(mu_future + 2 * std_future, 4),
                 })
                 st.dataframe(fore_df, use_container_width=True)
 
