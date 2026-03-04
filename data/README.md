@@ -67,6 +67,35 @@
 
 ---
 
+## sunspots_monthly.csv — Monthly sunspot numbers (1749–2026)
+
+| Field | Value |
+|---|---|
+| **Source** | **WDC-SILSO** — World Data Center for the production, preservation and dissemination of the international sunspot number |
+| **Provider** | Royal Observatory of Belgium, Brussels |
+| **Portal** | [sidc.be/silso](https://www.sidc.be/silso/datafiles) |
+| **URL** | `https://www.sidc.be/silso/DATA/SN_m_tot_V2.0.csv` |
+| **Frequency** | Monthly |
+| **Period** | 1749-01 → 2026-03 (3 326 observations) |
+| **Columns** | `Date`, `Sunspots` (monthly mean international sunspot number) |
+| **Licence** | [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) — free for non-commercial use with attribution |
+| **Citation** | SILSO World Data Center, *The International Sunspot Number*, Royal Observatory of Belgium, Brussels, 1749–present |
+
+**Notes:**
+- Quasi-periodic ~11-year solar cycle (Schwabe cycle), but period varies between 9 and 14 years.
+- Amplitude strongly variable between cycles: some maxima exceed 200, others barely reach 80.
+- Right-skewed distribution: sunspots ≥ 0 with occasional very high spikes.
+- Contains the **Maunder Minimum** (1645–1715) and **Dalton Minimum** (1790–1830) — prolonged periods of very low activity.
+- Cycle 25 peak (2024–2025) is visible at the end of the series.
+
+**Recommended Streamlit settings:**
+- Column: `Sunspots`
+- STL: **disabled** (the cycle is quasi-periodic, not fixed-period)
+- Latent dim `d`: **4** (captures the ~11-year oscillation and its harmonics)
+- EM iterations: **200**
+
+---
+
 ## paris_temperature_daily.csv — Daily mean temperature in Paris (2020–2024)
 
 | Field | Value |
