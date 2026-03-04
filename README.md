@@ -1,5 +1,10 @@
 # Kalman-EM Time Series Forecaster
 
+[![Tests](https://github.com/MarouaneAEF/kalman_time_series/actions/workflows/pytest.yml/badge.svg)](https://github.com/MarouaneAEF/kalman_time_series/actions/workflows/pytest.yml)
+[![Pylint](https://github.com/MarouaneAEF/kalman_time_series/actions/workflows/pylint.yml/badge.svg)](https://github.com/MarouaneAEF/kalman_time_series/actions/workflows/pylint.yml)
+[![PyPI version](https://img.shields.io/pypi/v/kalman-em?color=blue)](https://pypi.org/project/kalman-em/)
+[![Python](https://img.shields.io/pypi/pyversions/kalman-em)](https://pypi.org/project/kalman-em/)
+
 > A production-ready time series forecasting framework based on the **Kalman filter** with parameters learned by the **Expectation-Maximisation (EM) algorithm**, packaged as an interactive **Streamlit application**.
 
 ---
