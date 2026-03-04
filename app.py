@@ -54,17 +54,26 @@ def _n_free_params(d: int) -> int:
     return d * d + d + d * (d + 1) // 2 + 1 + d + d * (d + 1) // 2
 
 
+def _downsample(arr: np.ndarray, max_pts: int) -> np.ndarray:
+    """Return a regularly-strided subsample of arr keeping at most max_pts points."""
+    if len(arr) <= max_pts:
+        return arr
+    stride = max(1, len(arr) // max_pts)
+    return arr[::stride]
+
+
 def _auto_configure(dates, values, stl_period: int) -> dict:
     """
     Quick BIC-based selection of latent dim d, STL usage, and n_iter.
-    Runs 30 EM iterations for d = 1..4 on a standardised version of the data.
+    Subsamples to MAX_AUTOCONF_PTS before fitting to stay fast on large datasets.
     """
+    MAX_AUTOCONF_PTS = 500
     n = len(values)
     Y = values.copy().astype(float)
     seasonality_strength = 0.0
     use_stl = False
 
-    # --- Seasonality strength ---
+    # --- Seasonality strength (on full series — cheap) ---
     if stl_period > 1 and _HAS_STL and n >= 2 * stl_period + 1:
         try:
             trend_s, seas_s, resid_s = stl_decompose(dates, values, stl_period)
@@ -78,13 +87,16 @@ def _auto_configure(dates, values, stl_period: int) -> dict:
         except Exception:
             pass
 
+    # --- Subsample for BIC estimation ---
+    Y = _downsample(Y, MAX_AUTOCONF_PTS)
+
     # --- Standardise ---
     mu_y, std_y = float(np.nanmean(Y)), float(np.nanstd(Y))
     Y_std = ((Y - mu_y) / std_y).reshape(-1, 1) if std_y > 0 else Y.reshape(-1, 1)
     T = len(Y_std)
 
     # --- BIC for d = 1..4 ---
-    QUICK_ITERS = 30
+    QUICK_ITERS = 20
     bic_scores: dict[int, float] = {}
     lls_by_d:   dict[int, list]  = {}
 
@@ -356,30 +368,34 @@ def _fmt_date_axis(ax, dates):
 
 
 def fig_raw(dates, values, val_col: str):
+    MAX_PLOT = 3000
+    d = _downsample(np.asarray(dates),  MAX_PLOT)
+    v = _downsample(np.asarray(values), MAX_PLOT)
     fig, ax = plt.subplots(figsize=(11, 3.5))
-    ax.plot(pd.to_datetime(dates), values, color="steelblue", lw=1)
+    ax.plot(pd.to_datetime(d), v, color="steelblue", lw=1)
     ax.set_title(f"Raw time series — {val_col}")
     ax.set_ylabel(val_col)
-    _fmt_date_axis(ax, dates)
+    _fmt_date_axis(ax, d)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     return fig
 
 
 def fig_stl(dates, values, trend, seasonal, resid, val_col: str):
+    MAX_PLOT = 3000
+    dt = pd.to_datetime(_downsample(np.asarray(dates), MAX_PLOT))
+    panels = [
+        (_downsample(np.asarray(values),   MAX_PLOT), "Observed",  "steelblue"),
+        (_downsample(np.asarray(trend),    MAX_PLOT), "Trend",     "darkorange"),
+        (_downsample(np.asarray(seasonal), MAX_PLOT), "Seasonal",  "green"),
+        (_downsample(np.asarray(resid),    MAX_PLOT), "Residual",  "purple"),
+    ]
     fig, axes = plt.subplots(4, 1, figsize=(11, 10),
                              gridspec_kw={"height_ratios": [2, 1.5, 1.5, 1.5]})
-    dt = pd.to_datetime(dates)
-    panels = [
-        (values,   "Observed",   "steelblue"),
-        (trend,    "Trend",      "darkorange"),
-        (seasonal, "Seasonal",   "green"),
-        (resid,    "Residual",   "purple"),
-    ]
     for ax, (data, label, color) in zip(axes, panels):
         ax.plot(dt, data, color=color, lw=1)
         ax.set_ylabel(label)
-        _fmt_date_axis(ax, dates)
+        _fmt_date_axis(ax, dt)
         ax.grid(True, alpha=0.3)
     axes[0].set_title(f"STL decomposition — {val_col}")
     fig.tight_layout()
@@ -388,14 +404,19 @@ def fig_stl(dates, values, trend, seasonal, resid, val_col: str):
 
 def fig_backtest(dates_train, values_train, dates_test, values_test,
                  y_pred, y_std, metrics: dict):
+    MAX_PLOT = 3000
+    # Downsample train for display; keep test at full resolution (important for validation)
+    dtr_d = _downsample(np.asarray(dates_train),  MAX_PLOT)
+    vtr_d = _downsample(np.asarray(values_train), MAX_PLOT)
+
     fig, axes = plt.subplots(3, 1, figsize=(11, 10),
                              gridspec_kw={"height_ratios": [3, 1.5, 1.5]})
-    dt_train = pd.to_datetime(dates_train)
+    dt_train = pd.to_datetime(dtr_d)
     dt_test  = pd.to_datetime(dates_test)
 
     # Panel 1 — predictions vs actual
     ax = axes[0]
-    ax.plot(dt_train, values_train, color="steelblue", lw=1,
+    ax.plot(dt_train, vtr_d, color="steelblue", lw=1,
             label="Train", alpha=0.6)
     ax.plot(dt_test, values_test, color="steelblue", lw=1.8,
             label="Test (actual)", zorder=4)
@@ -473,34 +494,47 @@ def fig_reconstruction_forecast(
     C_RECON = "#2196F3"
     C_FORE  = "#E53935"
 
+    MAX_PLOT = 2000   # max points per series for readable rendering
+
     fig, ax = plt.subplots(figsize=(13, 5))
-    dt_train  = pd.to_datetime(dates_train)
-    dt_test   = pd.to_datetime(dates_test)
+
+    # Downsample for display only (model data unchanged)
+    dtr  = _downsample(np.asarray(dates_train),  MAX_PLOT)
+    vtr  = _downsample(np.asarray(values_train), MAX_PLOT)
+    mtr  = _downsample(np.asarray(mu_train),     MAX_PLOT)
+    str_ = _downsample(np.asarray(std_train),    MAX_PLOT)
+    dte  = _downsample(np.asarray(dates_test),   MAX_PLOT // 4)
+    vte  = _downsample(np.asarray(values_test),  MAX_PLOT // 4)
+    mft  = _downsample(np.asarray(mu_fore_test), MAX_PLOT // 4)
+    sft  = _downsample(np.asarray(std_fore_test),MAX_PLOT // 4)
+
+    dt_train  = pd.to_datetime(dtr)
+    dt_test   = pd.to_datetime(dte)
     dt_future = pd.to_datetime(dates_future)
 
     # Observed — train as line, test as scatter dots (ground truth for validation)
-    ax.plot(dt_train, values_train, color=C_OBS, lw=1.2, alpha=0.7,
+    ax.plot(dt_train, vtr, color=C_OBS, lw=1.2, alpha=0.7,
             label="Observed (train)", zorder=1)
-    ax.scatter(dt_test, values_test, color=C_OBS, s=18, alpha=0.85, zorder=4,
+    ax.scatter(dt_test, vte, color=C_OBS, s=18, alpha=0.85, zorder=4,
                label="Observed (test — ground truth)")
 
     # Kalman smooth on train
     ax.fill_between(dt_train,
-                    mu_train - 2 * std_train,
-                    mu_train + 2 * std_train,
+                    mtr - 2 * str_,
+                    mtr + 2 * str_,
                     color=C_RECON, alpha=0.15, label="±2σ reconstruction", zorder=2)
-    ax.plot(dt_train, mu_train, color=C_RECON, lw=1.8,
+    ax.plot(dt_train, mtr, color=C_RECON, lw=1.8,
             label="Reconstruction (smooth)", zorder=3)
 
     # Multi-step forecast over test period (validation zone)
     ax.fill_between(dt_test,
-                    mu_fore_test - 2 * std_fore_test,
-                    mu_fore_test + 2 * std_fore_test,
+                    mft - 2 * sft,
+                    mft + 2 * sft,
                     color=C_FORE, alpha=0.18, label="±2σ forecast", zorder=2)
-    ax.plot(dt_test, mu_fore_test, color=C_FORE, lw=2, linestyle="--",
+    ax.plot(dt_test, mft, color=C_FORE, lw=2, linestyle="--",
             label="Forecast (validation)", zorder=3)
 
-    # Pure future forecast
+    # Pure future forecast (already short — no downsampling needed)
     ax.fill_between(dt_future,
                     y_future - 2 * std_future,
                     y_future + 2 * std_future,
