@@ -96,6 +96,26 @@
 
 ---
 
+## airline_passengers.csv — Monthly international airline passengers (1949–1960)
+
+| Field | Value |
+|---|---|
+| **Source** | Box, G. E. P., Jenkins, G. M. & Reinsel, G. C. (1976) *Time Series Analysis, Forecasting and Control*, 3rd ed., Holden-Day — **Series G** |
+| **Available via** | R `datasets::AirPassengers` / `statsmodels.datasets.get_rdataset("AirPassengers")` |
+| **Frequency** | Monthly |
+| **Period** | 1949-01 → 1960-12 (144 observations) |
+| **Columns** | `Date`, `Passengers` (monthly total international airline passengers, thousands) |
+| **Licence** | Public domain — reproduced from the Box-Jenkins textbook, widely redistributed as a statistical benchmark |
+| **Citation** | Box, G. E. P., Jenkins, G. M. & Reinsel, G. C. (1976). *Time Series Analysis: Forecasting and Control* (3rd ed.). Holden-Day. |
+
+**Notes:**
+- Canonical benchmark for time series analysis, originally used to illustrate SARIMA models.
+- Strong multiplicative trend × annual seasonality: passenger numbers nearly tripled over the period.
+- Variance increases with level → log transform recommended before Kalman-EM.
+- Recommended Streamlit settings: enable STL (period = **12**), latent dim `d` = **2**, EM iterations ≥ 100.
+
+---
+
 ## paris_temperature_daily.csv — Daily mean temperature in Paris (2020–2024)
 
 | Field | Value |
