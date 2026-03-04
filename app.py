@@ -45,6 +45,50 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
+# Dataset presets — recommended settings per known dataset file
+# ---------------------------------------------------------------------------
+
+DATASET_PRESETS: dict[str, dict] = {
+    "airline_passengers.csv": {
+        "use_stl": True, "stl_period": 12, "d": 2, "n_iter": 100, "n_forecast": 24,
+    },
+    "sunspots_monthly.csv": {
+        "use_stl": False, "stl_period": 132, "d": 4, "n_iter": 200, "n_forecast": 60,
+    },
+    "france_conso_elec.csv": {
+        "use_stl": True, "stl_period": 365, "d": 2, "n_iter": 200, "n_forecast": 30,
+    },
+    "paris_temperature_daily.csv": {
+        "use_stl": True, "stl_period": 365, "d": 2, "n_iter": 200, "n_forecast": 30,
+    },
+    "sncf_tgv_mensuel.csv": {
+        "use_stl": True, "stl_period": 12, "d": 2, "n_iter": 200, "n_forecast": 12,
+    },
+    "aapl_prices.csv": {
+        "use_stl": False, "stl_period": 12, "d": 2, "n_iter": 200, "n_forecast": 30,
+    },
+}
+
+_SIDEBAR_DEFAULTS = {
+    "sb_use_stl": False, "sb_stl_period": 12, "sb_d": 2,
+    "sb_n_iter": 200, "sb_n_forecast": 30,
+}
+
+
+def _apply_preset(fname: str) -> bool:
+    """Inject preset sidebar values into session_state. Returns True if preset found."""
+    preset = DATASET_PRESETS.get(fname.lower(), {})
+    base = {"use_stl": False, "stl_period": 12, "d": 2, "n_iter": 200, "n_forecast": 30}
+    merged = {**base, **preset}
+    st.session_state["sb_use_stl"]    = merged["use_stl"]
+    st.session_state["sb_stl_period"] = merged["stl_period"]
+    st.session_state["sb_d"]          = merged["d"]
+    st.session_state["sb_n_iter"]     = merged["n_iter"]
+    st.session_state["sb_n_forecast"] = merged["n_forecast"]
+    return bool(preset)
+
+
+# ---------------------------------------------------------------------------
 # Data helpers
 # ---------------------------------------------------------------------------
 
@@ -483,16 +527,29 @@ def sidebar() -> dict | None:
     st.sidebar.caption("Kalman-EM · time series prediction")
     st.sidebar.divider()
 
+    # Initialise session-state defaults (first run only)
+    for k, v in _SIDEBAR_DEFAULTS.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
     # --- Upload ---
     uploaded = st.sidebar.file_uploader("Upload a CSV file", type=["csv"])
     if uploaded is None:
         st.sidebar.info("Upload a CSV to get started.")
         return None
 
+    # Detect file change → apply preset
+    if st.session_state.get("_uploaded_name") != uploaded.name:
+        st.session_state["_uploaded_name"] = uploaded.name
+        preset_applied = _apply_preset(uploaded.name)
+        st.session_state["_preset_applied"] = preset_applied
+
     file_bytes = uploaded.read()
     df = parse_csv(file_bytes)
 
     st.sidebar.success(f"{len(df):,} rows · {df.shape[1]} columns")
+    if st.session_state.get("_preset_applied"):
+        st.sidebar.info(f"⚡ Preset applied for **{uploaded.name}**")
 
     # --- Column selection ---
     st.sidebar.subheader("Column selection")
@@ -524,7 +581,7 @@ def sidebar() -> dict | None:
     stl_available = _HAS_STL
     use_stl = st.sidebar.toggle(
         "Remove seasonality / trend (STL)",
-        value=False,
+        key="sb_use_stl",
         disabled=not stl_available,
         help="Seasonal-Trend decomposition via Loess (statsmodels required)."
              if stl_available else "statsmodels not installed.",
@@ -536,16 +593,16 @@ def sidebar() -> dict | None:
         stl_period = st.sidebar.number_input(
             "STL period",
             min_value=2, max_value=10_000,
-            value=suggested_period,
+            key="sb_stl_period",
             help="Number of time steps per seasonal cycle "
                  f"(auto-detected: {suggested_period})",
         )
 
     # --- Model hyperparameters ---
     st.sidebar.subheader("Model hyperparameters")
-    d = st.sidebar.slider("Latent dimension d", 1, 6, 2,
+    d = st.sidebar.slider("Latent dimension d", 1, 6, key="sb_d",
                           help="Dimension of the hidden state vector")
-    n_iter = st.sidebar.slider("Max EM iterations", 20, 500, 200, step=10)
+    n_iter = st.sidebar.slider("Max EM iterations", 20, 500, step=10, key="sb_n_iter")
     test_ratio = st.sidebar.slider("Test set ratio", 0.05, 0.40, 0.20, step=0.05,
                                    format="%.2f")
     tol = st.sidebar.select_slider(
@@ -564,7 +621,7 @@ def sidebar() -> dict | None:
     st.sidebar.subheader("Forecast")
     n_forecast = st.sidebar.slider(
         "Forecast horizon",
-        min_value=5, max_value=365, value=30, step=5,
+        min_value=5, max_value=365, step=5, key="sb_n_forecast",
         help="Number of steps to project beyond the last observation.",
     )
 
