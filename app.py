@@ -171,7 +171,8 @@ def run_pipeline(dates, values, cfg: dict) -> dict:
         Y_test  = resid_test.reshape(-1, 1)
 
         model = KalmanEM(d=cfg["d"], n_iter=cfg["n_iter"], tol=cfg["tol"],
-                         diagonal_R=True, diagonal_Q=False, verbose=False)
+                         diagonal_R=True, diagonal_Q=False,
+                         n_restarts=cfg["n_restarts"], verbose=False)
         model.fit(Y_train, standardise=True)
 
         # One-step-ahead on test residuals
@@ -189,7 +190,8 @@ def run_pipeline(dates, values, cfg: dict) -> dict:
         Y_test  = values_test.reshape(-1, 1)
 
         model = KalmanEM(d=cfg["d"], n_iter=cfg["n_iter"], tol=cfg["tol"],
-                         diagonal_R=True, diagonal_Q=False, verbose=False)
+                         diagonal_R=True, diagonal_Q=False,
+                         n_restarts=cfg["n_restarts"], verbose=False)
         model.fit(Y_train, standardise=True)
 
         pred_raw, var_raw = model.predict_one_step(Y_test, Y_context=Y_train)
@@ -210,6 +212,7 @@ def run_pipeline(dates, values, cfg: dict) -> dict:
         "stl":          stl_info,
         "log_liks":     model.log_liks_,
         "params":       model.params_,
+        "n_restarts":   cfg["n_restarts"],
     }
 
 # ---------------------------------------------------------------------------
@@ -355,11 +358,12 @@ def fig_matrix(M: np.ndarray, title: str):
 # Parameter display
 # ---------------------------------------------------------------------------
 
-def show_params(params: dict, log_liks: list):
+def show_params(params: dict, log_liks: list, n_restarts: int = 1):
     st.subheader("EM Convergence")
     st.pyplot(fig_loglik(log_liks), use_container_width=False)
 
-    st.markdown(f"**Converged in {len(log_liks)} iterations** "
+    restart_note = f" (best of {n_restarts} restarts)" if n_restarts > 1 else ""
+    st.markdown(f"**Converged in {len(log_liks)} iterations{restart_note}** "
                 f"— final log-likelihood: {log_liks[-1]:.4f}")
     st.divider()
 
@@ -477,25 +481,32 @@ def sidebar() -> dict | None:
         options=[1e-3, 1e-4, 1e-5, 1e-6],
         value=1e-5,
         format_func=lambda x: f"{x:.0e}",
+        help="Relative criterion: ΔLL / (1 + |LL|) < tol",
+    )
+    n_restarts = st.sidebar.slider(
+        "Random restarts",
+        min_value=1, max_value=5, value=1,
+        help="Run EM multiple times with different initialisations and keep the best result.",
     )
 
     st.sidebar.divider()
     run_btn = st.sidebar.button("Run Analysis", type="primary", use_container_width=True)
 
     return {
-        "df":         df,
-        "file_bytes": file_bytes,
-        "date_col":   date_col,
-        "val_col":    val_col,
-        "dates":      dates,
-        "values":     values,
-        "use_stl":    use_stl,
-        "stl_period": int(stl_period),
-        "d":          d,
-        "n_iter":     n_iter,
-        "test_ratio": test_ratio,
-        "tol":        tol,
-        "run":        run_btn,
+        "df":          df,
+        "file_bytes":  file_bytes,
+        "date_col":    date_col,
+        "val_col":     val_col,
+        "dates":       dates,
+        "values":      values,
+        "use_stl":     use_stl,
+        "stl_period":  int(stl_period),
+        "d":           d,
+        "n_iter":      n_iter,
+        "test_ratio":  test_ratio,
+        "tol":         tol,
+        "n_restarts":  n_restarts,
+        "run":         run_btn,
     }
 
 
@@ -546,6 +557,12 @@ Welcome to **Forecaster**, a time series prediction app powered by the
         with st.expander("Data preview (first 50 rows)"):
             st.dataframe(cfg["df"].head(50), use_container_width=True)
 
+    # ---- Clear stale results when series changes ----
+    series_key = f"{cfg['val_col']}_{len(cfg['values'])}"
+    if st.session_state.get("_series_key") != series_key:
+        st.session_state.pop("results", None)
+    st.session_state["_series_key"] = series_key
+
     # ---- Trigger pipeline ----
     if cfg["run"]:
         with st.spinner("Running Kalman-EM pipeline…"):
@@ -567,14 +584,17 @@ Welcome to **Forecaster**, a time series prediction app powered by the
             st.success("No pre-processing applied — Kalman-EM trained on raw series.")
         else:
             stl = results["stl"]
+            # Use the dates/values from the pipeline run — never cfg (stale mismatch)
+            dates_all  = np.concatenate([results["dates_train"], results["dates_test"]])
+            values_all = np.concatenate([results["values_train"], results["values_test"]])
             st.subheader("STL decomposition")
             st.pyplot(
-                fig_stl(cfg["dates"], cfg["values"],
+                fig_stl(dates_all, values_all,
                         stl["trend"], stl["seasonal"], stl["resid"],
                         cfg["val_col"]),
                 use_container_width=True,
             )
-            var_ratio = float(np.var(stl["resid"]) / np.var(cfg["values"]) * 100)
+            var_ratio = float(np.var(stl["resid"]) / np.var(values_all) * 100)
             st.metric(
                 "Residual variance / Total variance",
                 f"{var_ratio:.1f} %",
@@ -606,7 +626,8 @@ Welcome to **Forecaster**, a time series prediction app powered by the
         if results is None:
             st.info("Click **Run Analysis** in the sidebar to start.")
         else:
-            show_params(results["params"], results["log_liks"])
+            show_params(results["params"], results["log_liks"],
+                        results.get("n_restarts", 1))
 
 
 if __name__ == "__main__":

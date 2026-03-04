@@ -31,12 +31,14 @@ class KalmanEM:
     """
 
     def __init__(self, d=2, n_iter=200, tol=1e-4,
-                 diagonal_R=True, diagonal_Q=False, verbose=True):
+                 diagonal_R=True, diagonal_Q=False,
+                 n_restarts=1, verbose=True):
         self.d = d
         self.n_iter = n_iter
         self.tol = tol
         self.diagonal_R = diagonal_R
         self.diagonal_Q = diagonal_Q
+        self.n_restarts = n_restarts
         self.verbose = verbose
 
         self.params_ = None
@@ -85,6 +87,7 @@ class KalmanEM:
             init_params=init_params,
             diagonal_Q=self.diagonal_Q,
             diagonal_R=self.diagonal_R,
+            n_restarts=self.n_restarts,
             verbose=self.verbose,
         )
         return self

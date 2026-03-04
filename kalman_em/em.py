@@ -65,9 +65,11 @@ def m_step(Y, stats, update_F=True, update_H=True,
     S10 = E_x1x.sum(axis=0)
     S00 = E_xx[:-1].sum(axis=0)
 
-    # --- F ---
+    # --- F: solve instead of explicit inv ---
     if update_F:
-        F = S10 @ np.linalg.inv(S00 + 1e-8 * np.eye(d))
+        S00_reg = S00 + 1e-8 * np.eye(d)
+        # F S00 = S10  =>  S00^T F^T = S10^T  =>  F = solve(S00, S10^T)^T
+        F = np.linalg.solve(S00_reg, S10.T).T
     else:
         F = None
 
@@ -80,21 +82,31 @@ def m_step(Y, stats, update_F=True, update_H=True,
     else:
         Q = None
 
-    # --- H and R ---
+    # --- Observation sufficient statistics ---
     obs_mask = ~np.isnan(Y)
-    S_yx = np.zeros((m, d))
-    S_yy = np.zeros((m, m))
+
+    if obs_mask.all():
+        # Fast vectorised path (no missing data)
+        S_yx = Y.T @ E_x          # (m, d)
+        S_yy = Y.T @ Y            # (m, m)
+    else:
+        # General path: accumulate over observed entries only
+        S_yx = np.zeros((m, d))
+        S_yy = np.zeros((m, m))
+        for t in range(T):
+            idx = obs_mask[t]
+            if not idx.any():
+                continue
+            S_yx[idx] += np.outer(Y[t, idx], E_x[t])
+            S_yy[np.ix_(idx, idx)] += np.outer(Y[t, idx], Y[t, idx])
+
     S_xx_full = E_xx.sum(axis=0)
 
-    for t in range(T):
-        idx = obs_mask[t]
-        if not idx.any():
-            continue
-        S_yx[idx] += np.outer(Y[t, idx], E_x[t])
-        S_yy[np.ix_(idx, idx)] += np.outer(Y[t, idx], Y[t, idx])
-
+    # --- H: solve instead of explicit inv ---
     if update_H:
-        H = S_yx @ np.linalg.inv(S_xx_full + 1e-8 * np.eye(d))
+        S_xx_reg = S_xx_full + 1e-8 * np.eye(d)
+        # H S_xx = S_yx  =>  S_xx^T H^T = S_yx^T  =>  H = solve(S_xx, S_yx^T)^T
+        H = np.linalg.solve(S_xx_reg, S_yx.T).T
     else:
         H = None
 
@@ -160,40 +172,26 @@ def _clip_spectral_radius(F, max_rho=0.9999):
 
 
 def _ensure_pd(A, eps=1e-6):
+    """
+    Enforce positive definiteness.
+
+    Fast path: Cholesky (O(d³/3)).  Fallback: eigen-projection clamping
+    all eigenvalues to at least `eps`.
+    """
     A = 0.5 * (A + A.T)
-    min_eig = np.linalg.eigvalsh(A).min()
-    if min_eig < eps:
-        A += (eps - min_eig) * np.eye(A.shape[0])
-    return A
+    try:
+        np.linalg.cholesky(A)
+        return A
+    except np.linalg.LinAlgError:
+        eigvals, eigvecs = np.linalg.eigh(A)
+        eigvals = np.maximum(eigvals, eps)
+        return eigvecs @ np.diag(eigvals) @ eigvecs.T
 
 
-def run_em(Y, d, n_iter=200, tol=1e-5,
-           init_params=None,
-           update_F=True, update_H=True,
-           update_Q=True, update_R=True,
-           diagonal_Q=False, diagonal_R=True,
-           verbose=True):
-    """
-    Full EM loop for Kalman filter parameter estimation.
-
-    Parameters
-    ----------
-    Y        : (T, m) observations (NaN = missing)
-    d        : latent state dimension
-    n_iter   : max EM iterations
-    tol      : convergence tolerance on log-likelihood
-    init_params : dict with optional keys F, H, Q, R, mu0, Sigma0
-    verbose  : print progress every 10 iters
-
-    Returns
-    -------
-    params   : dict {F, H, Q, R, mu0, Sigma0}
-    log_liks : list of log-likelihoods
-    """
-    if init_params is None:
-        init_params = {}
-
-    rng = np.random.default_rng(0)
+def _single_em_run(Y, d, n_iter, tol,
+                   init_params, update_F, update_H, update_Q, update_R,
+                   diagonal_Q, diagonal_R, min_var, rng, verbose):
+    """One complete EM run from a given initialisation."""
     F, H, Q, R, mu0, Sigma0 = _stable_init(Y, d, init_params, rng)
 
     log_liks = []
@@ -210,10 +208,13 @@ def run_em(Y, d, n_iter=200, tol=1e-5,
             print("  Warning: log-likelihood is NaN — stopping early.")
             break
 
-        if i > 0 and abs(log_liks[-1] - log_liks[-2]) < tol:
-            if verbose:
-                print(f"  Converged at iteration {i}.")
-            break
+        # Relative convergence criterion — scale-invariant
+        if i > 0:
+            delta = abs(log_liks[-1] - log_liks[-2])
+            if delta / (1.0 + abs(log_liks[-2])) < tol:
+                if verbose:
+                    print(f"  Converged at iteration {i}.")
+                break
 
         new = m_step(Y, stats,
                      update_F=update_F, update_H=update_H,
@@ -225,10 +226,88 @@ def run_em(Y, d, n_iter=200, tol=1e-5,
         if update_H:
             H = new["H"]
         if update_Q:
-            Q = _ensure_pd(new["Q"])
+            Q = _ensure_pd(new["Q"], eps=min_var)
         if update_R:
-            R = _ensure_pd(new["R"])
+            R = _ensure_pd(new["R"], eps=min_var)
         mu0    = new["mu0"]
         Sigma0 = _ensure_pd(new["Sigma0"])
 
     return {"F": F, "H": H, "Q": Q, "R": R, "mu0": mu0, "Sigma0": Sigma0}, log_liks
+
+
+def run_em(Y, d, n_iter=200, tol=1e-5,
+           init_params=None,
+           update_F=True, update_H=True,
+           update_Q=True, update_R=True,
+           diagonal_Q=False, diagonal_R=True,
+           n_restarts=1, min_var=1e-6,
+           verbose=True):
+    """
+    Full EM loop for Kalman filter parameter estimation.
+
+    Parameters
+    ----------
+    Y          : (T, m) observations (NaN = missing)
+    d          : latent state dimension
+    n_iter     : max EM iterations
+    tol        : relative convergence tolerance on log-likelihood
+    init_params: dict with optional keys F, H, Q, R, mu0, Sigma0
+    n_restarts : number of random restarts (best log-lik is returned)
+    min_var    : minimum eigenvalue floor for Q, R, Sigma0
+    verbose    : print progress every 10 iters
+
+    Returns
+    -------
+    params   : dict {F, H, Q, R, mu0, Sigma0}
+    log_liks : list of log-likelihoods (from the best run)
+    """
+    if init_params is None:
+        init_params = {}
+
+    rng = np.random.default_rng(0)
+
+    # --- First run: structured / provided initialisation ---
+    if verbose and n_restarts > 1:
+        print(f"--- Run 1/{n_restarts} (structured init) ---")
+
+    best_params, best_lls = _single_em_run(
+        Y, d, n_iter, tol, init_params,
+        update_F, update_H, update_Q, update_R,
+        diagonal_Q, diagonal_R, min_var, rng, verbose
+    )
+    best_ll = best_lls[-1] if best_lls else -np.inf
+
+    # --- Additional random restarts ---
+    if n_restarts > 1:
+        obs_var = float(np.nanvar(Y))
+        m = Y.shape[1]
+
+        for r in range(1, n_restarts):
+            if verbose:
+                print(f"\n--- Run {r + 1}/{n_restarts} (random init) ---")
+
+            rand_init = {
+                "F": np.eye(d) * (0.80 + 0.15 * rng.random()),
+                "H": rng.standard_normal((m, d)) * np.sqrt(max(obs_var / d, 1e-6)),
+                "Q": np.eye(d) * obs_var * (0.02 + 0.08 * rng.random()),
+                "R": np.eye(m) * obs_var * (0.1 + 0.4 * rng.random()),
+            }
+
+            params, lls = _single_em_run(
+                Y, d, n_iter, tol, rand_init,
+                update_F, update_H, update_Q, update_R,
+                diagonal_Q, diagonal_R, min_var, rng, verbose
+            )
+
+            ll = lls[-1] if lls else -np.inf
+            if ll > best_ll:
+                best_ll = ll
+                best_params = params
+                best_lls = lls
+                if verbose:
+                    print(f"  *** New best log-lik: {best_ll:.4f} ***")
+
+        if verbose:
+            print(f"\nBest log-lik over {n_restarts} restarts: {best_ll:.4f}")
+
+    return best_params, best_lls

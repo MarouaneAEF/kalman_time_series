@@ -11,12 +11,20 @@ import numpy as np
 
 
 def _make_pd(A, eps=1e-8):
-    """Enforce positive definiteness by adding a small diagonal if needed."""
+    """
+    Enforce positive definiteness.
+
+    Fast path: try Cholesky (O(d³/3)).  If it fails, fall back to eigen-
+    projection which also clamps all eigenvalues to at least `eps`.
+    """
     A = 0.5 * (A + A.T)
-    min_eig = np.linalg.eigvalsh(A).min()
-    if min_eig < eps:
-        A += (eps - min_eig) * np.eye(A.shape[0])
-    return A
+    try:
+        np.linalg.cholesky(A)
+        return A
+    except np.linalg.LinAlgError:
+        eigvals, eigvecs = np.linalg.eigh(A)
+        eigvals = np.maximum(eigvals, eps)
+        return eigvecs @ np.diag(eigvals) @ eigvecs.T
 
 
 def kalman_filter(Y, F, H, Q, R, mu0, Sigma0):
@@ -49,6 +57,7 @@ def kalman_filter(Y, F, H, Q, R, mu0, Sigma0):
     mu_filt    = np.zeros((T, d))
     Sigma_filt = np.zeros((T, d, d))
     log_likelihood = 0.0
+    log2pi = np.log(2 * np.pi)
 
     mu    = mu0.copy()
     Sigma = _make_pd(Sigma0)
@@ -70,6 +79,7 @@ def kalman_filter(Y, F, H, Q, R, mu0, Sigma0):
             continue
 
         obs_idx = ~missing
+        obs_m   = int(obs_idx.sum())
         if missing.any():
             H_obs = H[obs_idx]
             R_obs = R[np.ix_(obs_idx, obs_idx)]
@@ -77,11 +87,20 @@ def kalman_filter(Y, F, H, Q, R, mu0, Sigma0):
         else:
             H_obs, R_obs, y_obs = H, R, obs
 
+        # Innovation covariance S = H P H^T + R
         S = _make_pd(H_obs @ Sigma_p @ H_obs.T + R_obs)
-        K = Sigma_p @ H_obs.T @ np.linalg.inv(S)
+
+        # Cholesky of S — used for gain, log-det, and Mahalanobis distance
+        L = np.linalg.cholesky(S)           # S = L L^T
+
         innovation = y_obs - H_obs @ mu_p
 
+        # Kalman gain via solve:  K = Sigma_p H^T S^{-1}
+        #   => S K^T = H Sigma_p  => K = solve(S, H Sigma_p)^T
+        K = np.linalg.solve(S, H_obs @ Sigma_p).T
+
         mu = mu_p + K @ innovation
+
         # Joseph form for numerical stability: (I-KH) P (I-KH)^T + K R K^T
         IKH   = np.eye(d) - K @ H_obs
         Sigma = _make_pd(IKH @ Sigma_p @ IKH.T + K @ R_obs @ K.T)
@@ -89,13 +108,12 @@ def kalman_filter(Y, F, H, Q, R, mu0, Sigma0):
         mu_filt[t]    = mu
         Sigma_filt[t] = Sigma
 
-        # Log-likelihood contribution
-        sign, log_det = np.linalg.slogdet(S)
-        log_likelihood += -0.5 * (
-            log_det
-            + innovation @ np.linalg.solve(S, innovation)
-            + int(obs_idx.sum()) * np.log(2 * np.pi)
-        )
+        # Log-likelihood contribution — all quantities from the Cholesky of S
+        log_det = 2.0 * np.sum(np.log(np.diag(L)))   # log|S| — numerically stable
+        v       = np.linalg.solve(L, innovation)       # L v = innov  (triangular)
+        maha    = float(v @ v)                          # innov^T S^{-1} innov
+
+        log_likelihood += -0.5 * (log_det + maha + obs_m * log2pi)
 
     return mu_filt, Sigma_filt, mu_pred, Sigma_pred, log_likelihood
 
@@ -116,7 +134,10 @@ def rts_smoother(mu_filt, Sigma_filt, mu_pred, Sigma_pred, F):
     G = np.zeros((T - 1, d, d))
 
     for t in range(T - 2, -1, -1):
-        J = Sigma_filt[t] @ F.T @ np.linalg.inv(Sigma_pred[t + 1])
+        # Smoother gain: J = Sigma_filt[t] F^T Sigma_pred[t+1]^{-1}
+        #   => Sigma_pred[t+1] J^T = F Sigma_filt[t]
+        #   => J = solve(Sigma_pred[t+1], F @ Sigma_filt[t])^T
+        J = np.linalg.solve(Sigma_pred[t + 1], F @ Sigma_filt[t]).T
         G[t] = J
 
         mu_smooth[t] = mu_filt[t] + J @ (mu_smooth[t + 1] - mu_pred[t + 1])
