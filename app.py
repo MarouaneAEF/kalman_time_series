@@ -145,6 +145,9 @@ DATASET_PRESETS: dict[str, dict] = {
     "aapl_prices.csv": {
         "use_stl": False, "stl_period": 12, "d": 2, "n_iter": 200, "n_forecast": 30,
     },
+    "etth1.csv": {
+        "use_stl": True, "stl_period": 24, "d": 2, "n_iter": 200, "n_forecast": 168,
+    },
 }
 
 _SIDEBAR_DEFAULTS = {

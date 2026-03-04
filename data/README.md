@@ -1,5 +1,46 @@
 # Data
 
+## ETTh1.csv — Electricity Transformer Temperature, hourly (2016–2018)
+
+| Field | Value |
+|---|---|
+| **Source** | Zhou, H., Zhang, S., Peng, J., Zhang, S., Li, J., Xiong, H., & Zhang, W. (2021). *Informer: Beyond Efficient Transformer for Long Sequence Time-Series Forecasting*. AAAI 2021. |
+| **Repository** | [github.com/zhouhaoyi/ETDataset](https://github.com/zhouhaoyi/ETDataset) |
+| **URL** | `https://raw.githubusercontent.com/zhouhaoyi/ETDataset/main/ETT-small/ETTh1.csv` |
+| **Frequency** | Hourly |
+| **Period** | 2016-07-01 → 2018-06-26 (17 420 observations) |
+| **Licence** | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
+| **Citation** | Zhou et al. (2021). Informer: Beyond Efficient Transformer for Long Sequence Time-Series Forecasting. *Proceedings of the AAAI Conference on Artificial Intelligence*, 35(12), 11106–11115. |
+
+**Columns:**
+
+| Column | Description | Unit |
+|---|---|---|
+| `date` | Hourly timestamp | YYYY-MM-DD HH:MM:SS |
+| `HUFL` | High Useful Load | MW |
+| `HULL` | High Useless Load | MW |
+| `MUFL` | Middle Useful Load | MW |
+| `MULL` | Middle Useless Load | MW |
+| `LUFL` | Low Useful Load | MW |
+| `LULL` | Low Useless Load | MW |
+| `OT` | **Oil Temperature** — recommended target | °C |
+
+**Notes:**
+- Standard benchmark in the deep learning time series literature (Informer, PatchTST, TimesNet, etc.).
+- `OT` (oil temperature of the transformer) is the canonical forecasting target.
+- Strong daily seasonality (period = **24**) and weaker weekly seasonality.
+- Mean OT ≈ 13.3 °C, range −4.1 to 46.0 °C — right-skewed with occasional heat spikes.
+- Two full years of data → reliable STL decomposition and long-horizon forecast validation.
+
+**Recommended Streamlit settings:**
+- Column: `OT`
+- STL: **enabled**, period = **24** (daily cycle in hourly data)
+- Latent dim `d`: **2–3**
+- EM iterations: **200**
+- Forecast horizon: **168** (1 week ahead)
+
+---
+
 ## AAPL_prices.csv — Apple stock price (2022–2024)
 
 | Field | Value |
