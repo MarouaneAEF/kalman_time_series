@@ -369,7 +369,7 @@ All results use **one-step-ahead predictions** on a held-out test set — the mo
 |-----------|------------|----------|------------------|
 | 2.52 | 3.25 | 1.13 | 93.33 |
 
-![AAPL backtest](assets/backtest_AAPL_prices_Close.png)
+![AAPL backtest](https://raw.githubusercontent.com/MarouaneAEF/kalman_time_series/main/assets/backtest_AAPL_prices_Close.png)
 
 ---
 
@@ -379,7 +379,7 @@ All results use **one-step-ahead predictions** on a held-out test set — the mo
 |----------|-----------|----------|------------------|
 | 2 337 | 3 121 | 4.81 | 98.08 |
 
-![Electricity backtest](assets/backtest_france_conso_elec_Conso_MW.png)
+![Electricity backtest](https://raw.githubusercontent.com/MarouaneAEF/kalman_time_series/main/assets/backtest_france_conso_elec_Conso_MW.png)
 
 ---
 
@@ -391,7 +391,7 @@ All results use **one-step-ahead predictions** on a held-out test set — the mo
 
 > MAPE is not reported: Celsius values near 0 °C in winter produce artifically high percentages.
 
-![Temperature backtest](assets/backtest_paris_temperature_daily_Temp_C.png)
+![Temperature backtest](https://raw.githubusercontent.com/MarouaneAEF/kalman_time_series/main/assets/backtest_paris_temperature_daily_Temp_C.png)
 
 ---
 
@@ -401,7 +401,7 @@ All results use **one-step-ahead predictions** on a held-out test set — the mo
 |----------|-----------|----------|------------------|
 | 1.74 | 2.04 | 1.96 | 100.00 |
 
-![SNCF backtest](assets/backtest_sncf_tgv_mensuel_ponctualite_pct.png)
+![SNCF backtest](https://raw.githubusercontent.com/MarouaneAEF/kalman_time_series/main/assets/backtest_sncf_tgv_mensuel_ponctualite_pct.png)
 
 ---
 
@@ -413,7 +413,7 @@ All results use **one-step-ahead predictions** on a held-out test set — the mo
 
 > The ~11-year Schwabe cycle is quasi-periodic (period varies between 9 and 14 years) and non-stationary in amplitude — making this a genuinely challenging benchmark. MAPE is not reported because sunspot numbers regularly reach 0. `d=4` captures the fundamental oscillation and its harmonics.
 
-![Sunspot backtest](assets/backtest_sunspots_monthly_Sunspots.png)
+![Sunspot backtest](https://raw.githubusercontent.com/MarouaneAEF/kalman_time_series/main/assets/backtest_sunspots_monthly_Sunspots.png)
 
 ---
 
