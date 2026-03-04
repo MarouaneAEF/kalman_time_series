@@ -204,17 +204,21 @@ def infer_stl_period(dates) -> int:
     """Guess a sensible STL period from the median gap between dates."""
     if len(dates) < 3:
         return 1
-    ts = pd.to_datetime(dates)
-    gaps = (ts[1:] - ts[:-1]).days
-    med = float(np.median(gaps))
-    if med <= 2:
-        return 365     # daily → annual seasonality
-    if med <= 10:
-        return 52      # weekly
-    if med <= 45:
-        return 12      # monthly
-    if med <= 120:
-        return 4       # quarterly
+    ts  = pd.to_datetime(dates)
+    # Use seconds for precision — handles sub-daily frequencies
+    med_sec = float(np.median((ts[1:] - ts[:-1]).total_seconds()))
+    if med_sec < 120:          # minute-level
+        return 60              # hourly cycle
+    if med_sec < 7200:         # hourly (< 2 h)
+        return 24              # daily cycle
+    if med_sec < 172800:       # daily (< 2 days)
+        return 365             # annual cycle
+    if med_sec < 864000:       # weekly (< 10 days)
+        return 52
+    if med_sec < 3456000:      # monthly (< 40 days)
+        return 12
+    if med_sec < 10368000:     # quarterly (< 120 days)
+        return 4
     return 1
 
 # ---------------------------------------------------------------------------
@@ -467,11 +471,12 @@ def fig_backtest(dates_train, values_train, dates_test, values_test,
 
 def _future_dates(dates, n: int) -> np.ndarray:
     """Generate n future dates with the same median frequency as the series."""
-    last = pd.Timestamp(dates[-1])
-    gaps = np.diff(dates).astype("timedelta64[D]").astype(int)
-    step = max(1, int(np.median(gaps)))
+    ts   = pd.to_datetime(dates)
+    last = ts[-1]
+    # Use timedelta directly (handles sub-daily frequencies correctly)
+    step = pd.to_timedelta(np.median((ts[1:] - ts[:-1]).total_seconds()), unit="s")
     return np.array(
-        [last + pd.Timedelta(days=i * step) for i in range(1, n + 1)],
+        [last + step * i for i in range(1, n + 1)],
         dtype="datetime64[ns]",
     )
 
