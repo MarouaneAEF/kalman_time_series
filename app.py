@@ -841,15 +841,25 @@ Welcome to **Forecaster**, a time series prediction app powered by the
                 use_container_width=True,
             )
 
-            # Table of forecast values (future only)
-            with st.expander(f"Forecast values (next {n_fore} steps beyond test)"):
-                fore_df = pd.DataFrame({
-                    "Date":      pd.to_datetime(dates_future).strftime("%Y-%m-%d"),
-                    "Forecast":  np.round(mu_future, 4),
-                    "Lower ±2σ": np.round(mu_future - 2 * std_future, 4),
-                    "Upper ±2σ": np.round(mu_future + 2 * std_future, 4),
-                })
-                st.dataframe(fore_df, use_container_width=True)
+            # Table of forecast values (future only) + download
+            fore_df = pd.DataFrame({
+                "Date":      pd.to_datetime(dates_future).strftime("%Y-%m-%d"),
+                "Forecast":  np.round(mu_future, 4),
+                "Lower_2σ":  np.round(mu_future - 2 * std_future, 4),
+                "Upper_2σ":  np.round(mu_future + 2 * std_future, 4),
+            })
+            col_tbl, col_dl = st.columns([3, 1])
+            with col_tbl:
+                with st.expander(f"Forecast values (next {n_fore} steps beyond test)"):
+                    st.dataframe(fore_df, use_container_width=True)
+            with col_dl:
+                st.download_button(
+                    label="⬇ Download forecast CSV",
+                    data=fore_df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"forecast_{cfg['val_col']}_{n_fore}steps.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
 
     # ---- Model parameters tab ----
     with tab_params:
