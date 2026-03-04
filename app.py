@@ -345,22 +345,30 @@ def fig_reconstruction_forecast(dates_all, values_all,
     std_smooth = np.sqrt(np.abs(var_smooth))
     std_fore   = np.sqrt(np.abs(y_fore_var))
 
-    # Observed data
-    ax.plot(dt_all, values_all, color="gray", lw=1, alpha=0.55, label="Observed")
+    # Observed data (background)
+    ax.plot(dt_all, values_all, color="gray", lw=1, alpha=0.5,
+            label="Observed", zorder=1)
 
     # Smoothed reconstruction [0, T]
-    ax.plot(dt_all, mu_smooth, color="steelblue", lw=1.6, label="Smoothed [0, T]")
     ax.fill_between(dt_all, mu_smooth - 2*std_smooth, mu_smooth + 2*std_smooth,
-                    color="steelblue", alpha=0.18, label="±2σ smooth")
+                    color="steelblue", alpha=0.18, label="±2σ smooth", zorder=2)
+    ax.plot(dt_all, mu_smooth, color="steelblue", lw=1.8,
+            label="Smoothed [0, T]", zorder=3)
 
     # Forecast [T+1, T+n]
-    ax.plot(dt_fore, y_fore, color="darkorange", lw=2, linestyle="--",
-            label="Forecast")
     ax.fill_between(dt_fore, y_fore - 2*std_fore, y_fore + 2*std_fore,
-                    color="darkorange", alpha=0.22, label="±2σ forecast")
+                    color="darkorange", alpha=0.22, label="±2σ forecast", zorder=2)
+    ax.plot(dt_fore, y_fore, color="darkorange", lw=2, linestyle="--",
+            label="Forecast", zorder=3)
 
     # Separator
-    ax.axvline(dt_fore[0], color="gray", linestyle=":", lw=1.2)
+    ax.axvline(dt_fore[0], color="gray", linestyle=":", lw=1.2, zorder=1)
+
+    # Fix y-axis to observed data range so forecast bands don't blow the scale
+    y_lo = min(float(np.nanmin(values_all)), float(np.nanmin(mu_smooth)))
+    y_hi = max(float(np.nanmax(values_all)), float(np.nanmax(mu_smooth)))
+    margin = 0.15 * (y_hi - y_lo) if y_hi > y_lo else 1.0
+    ax.set_ylim(y_lo - margin, y_hi + margin)
 
     ax.set_ylabel(val_col)
     ax.set_title(f"Kalman-EM — Reconstruction & Forecast — {val_col}")
