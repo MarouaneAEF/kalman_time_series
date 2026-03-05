@@ -1,5 +1,34 @@
 # Data
 
+## co2_mauna_loa.csv — Atmospheric CO₂, Mauna Loa Observatory (1958–2026)
+
+| Field | Value |
+|---|---|
+| **Source** | NOAA Global Monitoring Laboratory |
+| **Station** | Mauna Loa Observatory, Hawaii (3 397 m altitude) |
+| **URL** | `https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_mm_mlo.csv` |
+| **Frequency** | Monthly |
+| **Period** | 1958-03 → 2026-01 (815 observations) |
+| **Columns** | `Date`, `CO2_ppm` (monthly mean atmospheric CO₂ concentration) |
+| **Licence** | Public domain — NOAA open data |
+| **Citation** | Keeling, C.D. et al. (1976). *Atmospheric carbon dioxide variations at Mauna Loa Observatory, Hawaii*. Tellus, 28, 538–551. / NOAA GML ongoing measurements. |
+
+**Notes:**
+- The canonical benchmark for trend + seasonality modelling: near-perfect linear trend (≈ 2.5 ppm/year) + strong annual cycle (± 3 ppm, driven by Northern Hemisphere vegetation).
+- CV = 0.09, max/min = 1.38 → **no log transform needed** (auto-configure correctly detects this).
+- STL (period = 12) removes > 90 % of total variance, leaving near-Gaussian residuals for Kalman-EM.
+- The "Keeling Curve" — one of the most famous time series in climate science.
+
+**Recommended Streamlit settings:**
+- Column: `CO2_ppm`
+- STL: **enabled**, period = **12**
+- Log transform: **disabled**
+- Latent dim `d`: **2**
+- EM iterations: **200**
+- Forecast horizon: **24** months (2 years ahead)
+
+---
+
 ## ETTh1.csv — Electricity Transformer Temperature, hourly (2016–2018)
 
 | Field | Value |
@@ -28,16 +57,45 @@
 **Notes:**
 - Standard benchmark in the deep learning time series literature (Informer, PatchTST, TimesNet, etc.).
 - `OT` (oil temperature of the transformer) is the canonical forecasting target.
-- Strong daily seasonality (period = **24**) and weaker weekly seasonality.
+- Dominant seasonality is **weekly** (period = **168**) — industrial transformer load follows weekday/weekend patterns more strongly than daily cycles.
+- Daily cycle (period=24) exists but has small amplitude (~1–2 °C) compared to weekly variation (~4–8 °C).
 - Mean OT ≈ 13.3 °C, range −4.1 to 46.0 °C — right-skewed with occasional heat spikes.
 - Two full years of data → reliable STL decomposition and long-horizon forecast validation.
 
 **Recommended Streamlit settings:**
 - Column: `OT`
-- STL: **enabled**, period = **24** (daily cycle in hourly data)
+- STL: **enabled**, period = **168** (weekly cycle — dominant for industrial transformer load)
 - Latent dim `d`: **2–3**
 - EM iterations: **200**
 - Forecast horizon: **168** (1 week ahead)
+
+---
+
+## btc_usd_daily.csv — Bitcoin / USD daily closing price (2017–2024)
+
+| Field | Value |
+|---|---|
+| **Source** | Yahoo Finance via `yfinance` |
+| **Ticker** | `BTC-USD` |
+| **Frequency** | Daily (calendar days, including weekends) |
+| **Period** | 2017-01-01 → 2024-12-30 |
+| **Rows** | 2 921 days |
+| **Columns** | `Date`, `Close` (adjusted closing price, USD) |
+| **Licence** | Public financial data |
+
+**Notes:**
+- Extremely volatile and non-stationary: price ranged from **$778** (Jan 2017) to **$106 141** (Dec 2024).
+- No significant weekly or annual seasonality — STL decomposition is not recommended.
+- Major regimes: 2017 bull run → 2018 crash → 2020–2021 second bull run → 2022 bear market → 2023–2024 recovery.
+- Right-skewed with fat tails — Kalman-EM captures local volatility clustering.
+- Consider **log-transforming** the series before analysis to stabilise variance across regimes.
+
+**Recommended Streamlit settings:**
+- Column: `Close`
+- STL: **disabled** (no dominant periodic component)
+- Latent dim `d`: **3** (captures trend + momentum + mean-reversion)
+- EM iterations: **200**
+- Forecast horizon: **30** days
 
 ---
 

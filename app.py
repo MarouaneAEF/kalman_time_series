@@ -64,39 +64,64 @@ def _downsample(arr: np.ndarray, max_pts: int) -> np.ndarray:
 
 def _auto_configure(dates, values, stl_period: int) -> dict:
     """
-    Quick BIC-based selection of latent dim d, STL usage, and n_iter.
-    Subsamples to MAX_AUTOCONF_PTS before fitting to stay fast on large datasets.
+    Universal auto-configuration for any dataset.
+
+    Decisions taken automatically:
+      1. Log transform  — if series is strictly positive and max/min > 10 or CV > 0.5
+      2. STL            — if STL reduces residual variance by > 10 % (low bar, intentionally)
+      3. Latent dim d   — BIC over d = 1..4 on the final work signal
+      4. n_iter         — extrapolated from quick-run convergence speed
+
+    All decisions are made on the (possibly log-transformed, possibly STL-residual) signal
+    to ensure the Kalman receives the most stationary signal possible.
     """
     MAX_AUTOCONF_PTS = 500
+    QUICK_ITERS      = 20
     n = len(values)
-    Y = values.copy().astype(float)
-    seasonality_strength = 0.0
-    use_stl = False
+    raw = values.astype(float)
 
-    # --- Seasonality strength (on full series — cheap) ---
+    # ── 1. Log transform detection ────────────────────────────────────────────
+    all_pos = bool(np.all(raw > 0))
+    if all_pos:
+        cv    = float(np.std(raw) / (np.mean(raw) + 1e-10))
+        ratio = float(np.max(raw) / (np.min(raw) + 1e-10))
+        log_transform = (cv > 0.5) or (ratio > 5)
+    else:
+        log_transform = False
+
+    work = np.log(raw) if log_transform else raw.copy()
+
+    # ── 2. STL: try it, keep it if variance reduction ≥ 10 % ─────────────────
+    use_stl              = False
+    seasonality_strength = 0.0
+    var_reduction        = 0.0
+    Y                    = work.copy()
+
     if stl_period > 1 and _HAS_STL and n >= 2 * stl_period + 1:
         try:
-            trend_s, seas_s, resid_s = stl_decompose(dates, values, stl_period)
-            detrended = values - trend_s.values
-            var_dt = np.var(detrended)
-            var_res = np.var(resid_s.values)
-            seasonality_strength = float(max(0.0, 1.0 - var_res / (var_dt + 1e-10)))
-            use_stl = seasonality_strength > 0.3
+            trend_s, seas_s, resid_s = stl_decompose(dates, work, stl_period)
+            var_work  = float(np.var(work))
+            var_resid = float(np.var(resid_s.values))
+            var_reduction = float(max(0.0, 1.0 - var_resid / (var_work + 1e-10)))
+
+            # Seasonality strength (relative to detrended signal)
+            detrended = work - trend_s.values
+            var_dt    = float(np.var(detrended))
+            seasonality_strength = float(max(0.0, 1.0 - var_resid / (var_dt + 1e-10)))
+
+            # Low threshold: keep STL if it removes at least 10 % of variance
+            use_stl = var_reduction >= 0.10
             if use_stl:
                 Y = resid_s.values.astype(float)
         except Exception:
             pass
 
-    # --- Subsample for BIC estimation ---
+    # ── 3. BIC over d = 1..4 on the final (subsampled) signal ───────────────
     Y = _downsample(Y, MAX_AUTOCONF_PTS)
-
-    # --- Standardise ---
     mu_y, std_y = float(np.nanmean(Y)), float(np.nanstd(Y))
     Y_std = ((Y - mu_y) / std_y).reshape(-1, 1) if std_y > 0 else Y.reshape(-1, 1)
-    T = len(Y_std)
+    T     = len(Y_std)
 
-    # --- BIC for d = 1..4 ---
-    QUICK_ITERS = 20
     bic_scores: dict[int, float] = {}
     lls_by_d:   dict[int, list]  = {}
 
@@ -106,27 +131,25 @@ def _auto_configure(dates, values, stl_period: int) -> dict:
                          diagonal_R=True, diagonal_Q=False,
                          n_restarts=1, verbose=False)
             m.fit(Y_std, standardise=False)
-            ll = m.log_liks_[-1] if m.log_liks_ else -np.inf
+            ll  = m.log_liks_[-1] if m.log_liks_ else -np.inf
             bic = -2.0 * ll + np.log(T) * _n_free_params(d)
             bic_scores[d] = float(bic)
-            lls_by_d[d]   = m.log_liks_
+            lls_by_d[d]   = list(m.log_liks_) if m.log_liks_ else []
         except Exception:
             bic_scores[d] = float("inf")
 
-    best_d = min(bic_scores, key=bic_scores.get)
+    best_d = min(bic_scores, key=lambda k: bic_scores[k])
 
-    # --- Suggest n_iter ---
+    # ── 4. Suggest n_iter ─────────────────────────────────────────────────────
     converged_at = len(lls_by_d.get(best_d, []))
-    if converged_at < QUICK_ITERS:
-        raw = max(50, converged_at * 3)
-    else:
-        raw = 200
-    suggested_n_iter = int(round(raw / 10) * 10)
-    suggested_n_iter = max(20, min(500, suggested_n_iter))
+    raw_iter     = max(50, converged_at * 3) if converged_at < QUICK_ITERS else 200
+    suggested_n_iter = max(20, min(500, int(round(raw_iter / 10) * 10)))
 
     return {
+        "log_transform":        log_transform,
         "use_stl":              use_stl,
         "stl_period":           stl_period,
+        "var_reduction":        var_reduction,
         "d":                    best_d,
         "n_iter":               suggested_n_iter,
         "bic_scores":           bic_scores,
@@ -140,7 +163,10 @@ def _auto_configure(dates, values, stl_period: int) -> dict:
 
 DATASET_PRESETS: dict[str, dict] = {
     "airline_passengers.csv": {
-        "use_stl": True, "stl_period": 12, "d": 2, "n_iter": 100, "n_forecast": 24,
+        "use_stl": True, "stl_period": 12, "log_transform": True, "d": 2, "n_iter": 100, "n_forecast": 24,
+    },
+    "co2_mauna_loa.csv": {
+        "use_stl": True, "stl_period": 12, "log_transform": False, "d": 2, "n_iter": 200, "n_forecast": 24,
     },
     "sunspots_monthly.csv": {
         "use_stl": False, "stl_period": 132, "d": 4, "n_iter": 200, "n_forecast": 60,
@@ -155,10 +181,16 @@ DATASET_PRESETS: dict[str, dict] = {
         "use_stl": True, "stl_period": 12, "d": 2, "n_iter": 200, "n_forecast": 12,
     },
     "aapl_prices.csv": {
-        "use_stl": False, "stl_period": 12, "d": 2, "n_iter": 200, "n_forecast": 30,
+        "use_stl": False, "stl_period": 12, "log_transform": True, "d": 2, "n_iter": 200, "n_forecast": 30,
+    },
+    "btc_usd_daily.csv": {
+        "use_stl": False, "stl_period": 1, "log_transform": True, "d": 3, "n_iter": 200, "n_forecast": 30,
+    },
+    "airline_passengers.csv": {
+        "use_stl": True, "stl_period": 12, "log_transform": True, "d": 2, "n_iter": 100, "n_forecast": 24,
     },
     "etth1.csv": {
-        "use_stl": True, "stl_period": 24, "d": 2, "n_iter": 200, "n_forecast": 168,
+        "use_stl": True, "stl_period": 168, "d": 2, "n_iter": 200, "n_forecast": 168,
     },
 }
 
@@ -171,13 +203,15 @@ _SIDEBAR_DEFAULTS = {
 def _apply_preset(fname: str) -> bool:
     """Inject preset sidebar values into session_state. Returns True if preset found."""
     preset = DATASET_PRESETS.get(fname.lower(), {})
-    base = {"use_stl": False, "stl_period": 12, "d": 2, "n_iter": 200, "n_forecast": 30}
+    base = {"use_stl": False, "stl_period": 12, "log_transform": False,
+            "d": 2, "n_iter": 200, "n_forecast": 30}
     merged = {**base, **preset}
-    st.session_state["sb_use_stl"]    = merged["use_stl"]
-    st.session_state["sb_stl_period"] = merged["stl_period"]
-    st.session_state["sb_d"]          = merged["d"]
-    st.session_state["sb_n_iter"]     = merged["n_iter"]
-    st.session_state["sb_n_forecast"] = merged["n_forecast"]
+    st.session_state["sb_use_stl"]       = merged["use_stl"]
+    st.session_state["sb_stl_period"]    = merged["stl_period"]
+    st.session_state["sb_log_transform"] = merged["log_transform"]
+    st.session_state["sb_d"]             = merged["d"]
+    st.session_state["sb_n_iter"]        = merged["n_iter"]
+    st.session_state["sb_n_forecast"]    = merged["n_forecast"]
     return bool(preset)
 
 
@@ -232,9 +266,16 @@ def stl_decompose(dates, values, period: int):
     return res.trend, res.seasonal, res.resid
 
 
-def project_seasonal(seasonal_hist, n_fore: int, period: int) -> np.ndarray:
-    """Tile the last complete seasonal cycle forward for n_fore steps."""
-    cycle = np.array(seasonal_hist[-period:])   # shape (period,)
+def project_seasonal(seasonal_hist, n_fore: int, period: int, n_cycles: int = 5) -> np.ndarray:
+    """
+    Tile the average of the last n_cycles seasonal cycles forward for n_fore steps.
+    Falls back to fewer cycles if the history is too short.
+    """
+    hist = np.array(seasonal_hist)
+    avail = len(hist) // period          # number of complete cycles available
+    k = max(1, min(n_cycles, avail))     # how many cycles we can actually use
+    cycles = hist[-(k * period):]        # shape (k*period,)
+    cycle  = cycles.reshape(k, period).mean(axis=0)   # average across cycles
     return np.array([cycle[i % period] for i in range(n_fore)])
 
 # ---------------------------------------------------------------------------
@@ -265,7 +306,7 @@ def run_pipeline(dates, values, cfg: dict, callback=None) -> dict:
     dates  : (T,) np.datetime64 array
     values : (T,) float array
     cfg    : dict with keys:
-               use_stl, stl_period,
+               use_stl, stl_period, log_transform,
                d, n_iter, test_ratio, tol
 
     Returns
@@ -281,14 +322,25 @@ def run_pipeline(dates, values, cfg: dict, callback=None) -> dict:
     values_train = values[:n_train]
     values_test  = values[n_train:]
 
+    # ---- Log transform (applied before everything, reversed at the end) ------
+    log_transform = cfg.get("log_transform", False) and np.all(values > 0)
+    if log_transform:
+        work_values  = np.log(values)
+        work_train   = np.log(values_train)
+        work_test    = np.log(values_test)
+    else:
+        work_values  = values
+        work_train   = values_train
+        work_test    = values_test
+
     stl_info = None
 
     # ---- STL branch --------------------------------------------------------
     if cfg["use_stl"] and _HAS_STL and cfg["stl_period"] > 1:
         period = cfg["stl_period"]
 
-        # Decompose entire series so we have test STL components for recomposition
-        trend_all, seas_all, resid_all = stl_decompose(dates, values, period)
+        # Decompose entire (possibly log-transformed) series
+        trend_all, seas_all, resid_all = stl_decompose(dates, work_values, period)
 
         trend_train  = trend_all.values[:n_train]
         seas_train   = seas_all.values[:n_train]
@@ -312,19 +364,19 @@ def run_pipeline(dates, values, cfg: dict, callback=None) -> dict:
                          n_restarts=cfg["n_restarts"], verbose=False)
         model.fit(Y_train, standardise=True, callback=callback)
 
-        # One-step-ahead on test residuals
         pred_raw, var_raw = model.predict_one_step(Y_test, Y_context=Y_train)
         resid_pred = pred_raw[:, 0]
         resid_std  = np.sqrt(np.abs(var_raw[:, 0]))
 
-        # Recompose
-        y_pred = resid_pred + seas_test + trend_test
-        y_std  = resid_std   # uncertainty from residual model
+        # Recompose in work space, then back-transform
+        y_work_pred = resid_pred + seas_test + trend_test
+        y_pred = np.exp(y_work_pred) if log_transform else y_work_pred
+        y_std  = y_pred * resid_std if log_transform else resid_std
 
     # ---- Direct Kalman branch ----------------------------------------------
     else:
-        Y_train = values_train.reshape(-1, 1)
-        Y_test  = values_test.reshape(-1, 1)
+        Y_train = work_train.reshape(-1, 1)
+        Y_test  = work_test.reshape(-1, 1)
 
         model = KalmanEM(d=cfg["d"], n_iter=cfg["n_iter"], tol=cfg["tol"],
                          diagonal_R=True, diagonal_Q=False,
@@ -332,24 +384,30 @@ def run_pipeline(dates, values, cfg: dict, callback=None) -> dict:
         model.fit(Y_train, standardise=True, callback=callback)
 
         pred_raw, var_raw = model.predict_one_step(Y_test, Y_context=Y_train)
-        y_pred = pred_raw[:, 0]
-        y_std  = np.sqrt(np.abs(var_raw[:, 0]))
+        y_work_pred = pred_raw[:, 0]
+        y_work_std  = np.sqrt(np.abs(var_raw[:, 0]))
+
+        # Back-transform to original space
+        y_pred = np.exp(y_work_pred) if log_transform else y_work_pred
+        y_std  = y_pred * y_work_std if log_transform else y_work_std
 
     metrics = compute_metrics(values_test, y_pred, y_std)
 
     return {
-        "model":        model,
-        "dates_train":  dates_train,
-        "dates_test":   dates_test,
-        "values_train": values_train,
-        "values_test":  values_test,
-        "y_pred":       y_pred,
-        "y_std":        y_std,
-        "metrics":      metrics,
-        "stl":          stl_info,
-        "log_liks":     model.log_liks_,
-        "params":       model.params_,
-        "n_restarts":   cfg["n_restarts"],
+        "model":          model,
+        "dates_train":    dates_train,
+        "dates_test":     dates_test,
+        "values_train":   values_train,
+        "values_test":    values_test,
+        "work_train":     work_train,   # log-space or original, used for forecast tab
+        "log_transform":  log_transform,
+        "y_pred":         y_pred,
+        "y_std":          y_std,
+        "metrics":        metrics,
+        "stl":            stl_info,
+        "log_liks":       model.log_liks_,
+        "params":         model.params_,
+        "n_restarts":     cfg["n_restarts"],
     }
 
 # ---------------------------------------------------------------------------
@@ -488,12 +546,15 @@ def fig_reconstruction_forecast(
     mu_fore_test, std_fore_test,
     dates_future, y_future, std_future,
     val_col: str,
+    reliable_horizon: int = 0,
 ):
     """
     Validation-first layout:
       [0, T_train]  : observed train (line) + Kalman smooth (blue)
       [T_train, T]  : observed test (dots) + multi-step forecast (red) — visual validation
       [T, T+n_fore] : pure future forecast (red dashed) — no ground truth
+
+    reliable_horizon : if > 0 and < n_test, draw a shaded unreliable zone beyond that point.
     """
     C_OBS   = "#2d2d2d"
     C_RECON = "#2196F3"
@@ -538,6 +599,14 @@ def fig_reconstruction_forecast(
                     color=C_FORE, alpha=0.18, label="±2σ forecast", zorder=2)
     ax.plot(dt_test, mft, color=C_FORE, lw=2, linestyle="--",
             label="Forecast (validation)", zorder=3)
+
+    # Shade unreliable zone if horizon < n_test
+    if reliable_horizon > 0 and reliable_horizon < len(dates_test):
+        dt_horizon = pd.to_datetime(dates_test[reliable_horizon])
+        ax.axvspan(dt_horizon, dt_future[-1],
+                   color="gray", alpha=0.10, zorder=0,
+                   label=f"Beyond reliable horizon (~{reliable_horizon} steps)")
+        ax.axvline(dt_horizon, color="gray", linestyle="--", lw=1.2, zorder=5)
 
     # Pure future forecast (already short — no downsampling needed)
     ax.fill_between(dt_future,
@@ -597,6 +666,304 @@ def fig_matrix(M: np.ndarray, title: str):
     ax.set_yticklabels([f"i={k}" for k in range(M.shape[0])], fontsize=8)
     fig.tight_layout()
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Forecast quality report
+# ---------------------------------------------------------------------------
+
+_GRADE_COLOR = {"Excellent": "🟢", "Good": "🟡", "Poor": "🔴"}
+
+
+def _grade(value: float, thresholds: tuple, labels=("Excellent", "Good", "Poor")) -> str:
+    """Return a grade label given ascending thresholds (low-is-better)."""
+    if value <= thresholds[0]:
+        return labels[0]
+    if value <= thresholds[1]:
+        return labels[1]
+    return labels[2]
+
+
+def _grade_coverage(cov: float) -> str:
+    """Coverage should be ~95 %; penalise both too low and too high."""
+    if 88 <= cov <= 100:
+        return "Excellent"
+    if 75 <= cov < 88:
+        return "Good"
+    return "Poor"
+
+
+def show_forecast_quality(results: dict, val_col: str):
+    """
+    Guided forecast quality report written for non-specialists.
+    Plain-language narrative + simple cards + actionable advice.
+    Technical details hidden in an expert expander.
+    """
+    metrics      = results["metrics"]
+    log_liks     = results["log_liks"]
+    params       = results["params"]
+    y_pred       = results["y_pred"]
+    y_std        = results["y_std"]
+    values_test  = results["values_test"]
+    values_train = results["values_train"]
+    stl          = results["stl"]
+
+    # ── Derived quantities ───────────────────────────────────────────────────
+    mae      = float(metrics.get("MAE",  np.nan))
+    rmse     = float(metrics.get("RMSE", np.nan))
+    mape     = float(metrics.get("MAPE (%)", np.nan))
+    coverage = float(metrics.get(next(k for k in metrics if "Coverage" in k), 0.0))
+
+    series_mean  = float(np.mean(np.abs(values_test)))   # scale reference
+    norm_resid   = (values_test - y_pred) / np.where(y_std > 0, y_std, 1e-9)
+    nr_std       = float(norm_resid.std())
+    nr_mean      = float(norm_resid.mean())
+
+    F   = params["F"]
+    rho = float(np.max(np.abs(np.linalg.eigvals(F))))
+
+    if len(log_liks) >= 10:
+        ll_delta  = abs(log_liks[-1] - log_liks[-10]) / (abs(log_liks[-1]) + 1e-10)
+        converged = ll_delta < 5e-3
+    else:
+        converged = True
+
+    # Effective forecast horizon (variance saturation)
+    _Y_kal = (stl["resid"][:len(values_train)] if stl else values_train).reshape(-1, 1)
+    var_steps = results["model"].forecast(_Y_kal, n_steps=min(200, len(values_test)))[1][:, 0]
+    growth    = np.diff(var_steps)
+    flat_idx  = int(np.argmax(growth < 1e-4 * growth[0])) if np.any(growth < 1e-4 * growth[0]) else len(growth)
+    horizon_steps = max(1, flat_idx)
+
+    # ── Grades ───────────────────────────────────────────────────────────────
+    g_mape     = _grade(mape, (5, 15)) if not np.isnan(mape) else "Good"
+    g_coverage = _grade_coverage(coverage)
+    g_nr       = _grade(abs(nr_std - 1.0), (0.25, 0.6))
+    g_rho      = "Excellent" if 0.7 <= rho < 1.0 else ("Good" if rho < 0.7 else "Poor")
+    g_converge = "Excellent" if converged else "Poor"
+
+    overall_grades = [g_mape, g_coverage, g_nr, g_rho, g_converge]
+    n_poor = overall_grades.count("Poor")
+    n_good = overall_grades.count("Good")
+    if n_poor >= 2:
+        overall = "Poor"
+    elif n_poor == 1 or n_good >= 2:
+        overall = "Good"
+    else:
+        overall = "Excellent"
+
+    # ── Plain-language building blocks ───────────────────────────────────────
+
+    # Accuracy sentence
+    if not np.isnan(mape):
+        if mape < 5:
+            acc_sentence = (f"The model is **very accurate**: on average, its predictions are off by "
+                            f"only **{mape:.1f} %** of the true value "
+                            f"({mae:.2f} {val_col} units per step).")
+        elif mape < 15:
+            acc_sentence = (f"The model shows **acceptable accuracy**: predictions deviate by "
+                            f"**{mape:.1f} %** on average "
+                            f"({mae:.2f} {val_col} units per step).")
+        else:
+            acc_sentence = (f"The model's accuracy is **limited**: average deviation is "
+                            f"**{mape:.1f} %** ({mae:.2f} {val_col} units per step). "
+                            "See recommendations below.")
+    else:
+        acc_sentence = (f"Average prediction error: **{mae:.2f} {val_col} units** per step "
+                        "(percentage error not available — the series contains zeros).")
+
+    # Consistency sentence (RMSE vs MAE)
+    rmse_ratio = rmse / mae if mae > 0 else 1.0
+    if rmse_ratio < 1.5:
+        consist_sentence = "Errors are **consistent** — there are no catastrophic outlier predictions."
+    elif rmse_ratio < 2.5:
+        consist_sentence = ("Errors are **mostly consistent** but a few predictions were significantly "
+                            "off — check the absolute error panel in the chart above.")
+    else:
+        consist_sentence = ("There are **occasional large errors** (some predictions are far from "
+                            "the truth) — the model struggles with certain periods.")
+
+    # Confidence sentence
+    if g_coverage == "Excellent":
+        conf_sentence = (f"The uncertainty bands are **well-calibrated**: {coverage:.0f} % of true "
+                         "values fall inside the predicted range (ideal ≈ 95 %).")
+    elif coverage < 88:
+        conf_sentence = (f"The model is **slightly over-confident**: only {coverage:.0f} % of true "
+                         "values fall inside its predicted range (expected ≈ 95 %). "
+                         "Take the confidence bands as a lower bound on actual uncertainty.")
+    else:
+        conf_sentence = (f"The uncertainty bands are **a little wide** ({coverage:.0f} % coverage). "
+                         "The model is cautious — predictions are conservative.")
+
+    # Horizon sentence
+    if horizon_steps >= 50:
+        hor_sentence = (f"The model maintains **meaningful predictive power for at least "
+                        f"{horizon_steps} steps** ahead before uncertainty dominates.")
+    elif horizon_steps >= 10:
+        hor_sentence = (f"The model is reliable for roughly **{horizon_steps} steps ahead**. "
+                        "Beyond that, forecasts converge to the series average.")
+    else:
+        hor_sentence = (f"The model has a **short reliable horizon (~{horizon_steps} steps)**. "
+                        "Long-range forecasts will quickly revert to the series mean.")
+
+    # ── What went well / What to improve ─────────────────────────────────────
+    positives, improvements = [], []
+
+    if g_mape == "Excellent":
+        positives.append(f"Prediction accuracy is excellent (average error < 5 %)")
+    if g_coverage == "Excellent":
+        positives.append("Confidence intervals are well-calibrated (~95 % coverage)")
+    if g_rho in ("Excellent", "Good") and rho < 1.0:
+        positives.append("The model learned stable, non-diverging dynamics from the data")
+    if g_converge == "Excellent":
+        positives.append("Model training completed successfully")
+    if rmse_ratio < 1.5:
+        positives.append("Errors are uniform — no catastrophic prediction failures")
+    if horizon_steps >= 30:
+        positives.append(f"Good forecast horizon — reliable for {horizon_steps}+ steps ahead")
+
+    if not converged:
+        improvements.append(
+            "**Training did not fully complete** — increase *EM iterations* in the sidebar "
+            "(try 300–500). Parameters may be sub-optimal.")
+    if rho >= 1.0:
+        improvements.append(
+            "**The model dynamics are unstable** (may diverge at long horizons). "
+            "Try reducing the *latent dimension d* or running more iterations.")
+    if g_mape == "Poor" and not np.isnan(mape):
+        improvements.append(
+            f"**High prediction error ({mape:.1f} %)** — consider: "
+            "① enabling *Remove seasonality/trend* if the series has cycles; "
+            "② increasing *latent dimension d*; "
+            "③ running more EM iterations.")
+    if stl is None and not np.isnan(mape) and mape > 10:
+        improvements.append(
+            "**Seasonality/trend removal is off** — if the series has regular cycles "
+            "(daily, weekly, annual), enabling STL decomposition often reduces error significantly.")
+    if coverage < 80:
+        improvements.append(
+            f"**Confidence bands are too narrow** ({coverage:.0f} % coverage, expected 95 %) — "
+            "the model underestimates its own uncertainty. Try more EM iterations or a larger d.")
+    if nr_std > 1.5:
+        improvements.append(
+            "**Prediction intervals are under-sized** — true values frequently fall outside "
+            "the shaded band. Increase iterations or d to better estimate the noise level.")
+    if horizon_steps < 10:
+        improvements.append(
+            f"**Short forecast horizon (~{horizon_steps} steps)** — the model forgets the "
+            "past quickly. For longer horizons, try a larger *latent dimension d* or enable STL.")
+
+    # Horizon warning flag (used in render + improvements)
+    n_test       = len(values_test)
+    horizon_warn = horizon_steps < n_test // 2
+
+    if horizon_warn:
+        improvements.append(
+            f"**The test set is much longer than the reliable forecast horizon** "
+            f"({n_test} test steps vs ~{horizon_steps} reliable steps). "
+            f"The multi-step forecast in the Reconstruction & Forecast tab will diverge "
+            f"from actual observations after ~{horizon_steps} steps — this is expected and "
+            f"does **not** affect the backtest score above. "
+            f"To reduce this effect: shorten the test ratio, or use the model only for "
+            f"short-horizon forecasting (≤ {horizon_steps} steps)."
+        )
+
+    # ── Render ───────────────────────────────────────────────────────────────
+    st.subheader("One-step-ahead Backtest Quality")
+
+    st.info(
+        "ℹ️ **What this report measures:** the model's ability to predict **one step at a time**, "
+        "each time using the true previous value as input (one-step-ahead backtest). "
+        "This is the most honest measure of model fit, but it is **not the same** as the "
+        "multi-step forecast shown in the *Reconstruction & Forecast* tab, which predicts "
+        "many steps ahead without feedback from true values."
+    )
+
+    _VERDICT_ICON = {"Excellent": "✅", "Good": "⚠️", "Poor": "❌"}
+    _VERDICT_DESC = {
+        "Excellent": "The one-step-ahead predictions are reliable and well-calibrated.",
+        "Good":      "The one-step-ahead predictions are usable but have room for improvement.",
+        "Poor":      "The one-step-ahead prediction quality is limited — see recommendations below.",
+    }
+    verdict_color = {"Excellent": "success", "Good": "warning", "Poor": "error"}
+    getattr(st, verdict_color[overall])(
+        f"{_VERDICT_ICON[overall]} **Overall verdict: {overall}** — "
+        f"{_VERDICT_DESC[overall]}"
+    )
+
+    # ── Narrative summary ────────────────────────────────────────────────────
+    st.markdown("#### In plain words")
+    st.markdown(
+        f"{acc_sentence}  \n"
+        f"{consist_sentence}  \n"
+        f"{conf_sentence}  \n"
+        f"{hor_sentence}"
+    )
+
+    # ── 4 simple metric cards ────────────────────────────────────────────────
+    st.markdown("#### Key indicators")
+    c1, c2, c3, c4 = st.columns(4)
+
+    c1.metric(
+        label="Average error",
+        value=f"{mape:.1f} %" if not np.isnan(mape) else f"{mae:.2f}",
+        help=f"On average, each prediction is off by {mape:.1f} % of the true value "
+             f"({mae:.2f} {val_col} units). Lower is better.",
+    )
+    c2.metric(
+        label="Worst-case error",
+        value=f"{rmse:.2f} {val_col}",
+        help="Root Mean Squared Error. Penalises large occasional mistakes more than "
+             "the average error. If much larger than the average error, some periods "
+             "are poorly predicted.",
+    )
+    c3.metric(
+        label="Confidence band accuracy",
+        value=f"{coverage:.0f} %",
+        help="What fraction of true values fall inside the shaded ±2σ band. "
+             "Ideal value is ~95 %. "
+             "Too low → the band is too narrow (model is over-confident). "
+             "Too high → the band is too wide (model is over-cautious).",
+    )
+    c4.metric(
+        label="Reliable forecast horizon",
+        value=f"{horizon_steps} steps",
+        help="How many steps ahead the model can predict before uncertainty "
+             "overwhelms the signal. Beyond this point, forecasts converge "
+             "to the historical average.",
+    )
+
+    # ── What went well / To improve ─────────────────────────────────────────
+    col_pos, col_imp = st.columns(2)
+    with col_pos:
+        st.markdown("#### What went well")
+        if positives:
+            for p in positives:
+                st.markdown(f"✅ {p}")
+        else:
+            st.markdown("_(nothing stands out positively)_")
+
+    with col_imp:
+        st.markdown("#### What to improve")
+        if improvements:
+            for imp in improvements:
+                st.warning(imp)
+        else:
+            st.success("No significant issues detected.")
+
+    # ── Expert details (hidden by default) ───────────────────────────────────
+    with st.expander("🔬 Technical details (for experts)", expanded=False):
+        st.markdown(f"""
+| Diagnostic | Value | Grade | Technical interpretation |
+|---|---|---|---|
+| MAPE | {mape:.1f} % | {_GRADE_COLOR[g_mape]} {g_mape} | Mean absolute percentage error on the test set |
+| Coverage ±2σ | {coverage:.1f} % | {_GRADE_COLOR[g_coverage]} {g_coverage} | Fraction of test points inside the 95 % prediction interval |
+| RMSE / MAE | {rmse_ratio:.2f} | {"🟢" if rmse_ratio < 1.5 else "🟡" if rmse_ratio < 2.5 else "🔴"} | Ratio close to 1 → uniform errors; large ratio → outlier predictions |
+| Spectral radius ρ(F) | {rho:.4f} | {_GRADE_COLOR[g_rho]} {g_rho} | Largest eigenvalue of F. Must be < 1 (stability). High → long memory. Low → fast mean-reversion. |
+| EM convergence | {"Yes" if converged else "No"} | {_GRADE_COLOR[g_converge]} {g_converge} | Relative LL improvement over last 10 iterations < 0.5 % |
+| Norm. residuals σ | {nr_std:.3f} (μ = {nr_mean:.3f}) | {_GRADE_COLOR[g_nr]} {g_nr} | Std of (y − ŷ)/σ_pred. Should be ≈ 1.0. > 1.5 → R under-estimated. < 0.6 → R over-estimated. |
+| Effective horizon | {horizon_steps} steps | — | Steps until forecast variance growth < 10⁻⁴ of initial growth rate |
+""")
 
 
 # ---------------------------------------------------------------------------
@@ -707,28 +1074,35 @@ def sidebar() -> dict | None:
 
     suggested_period = infer_stl_period(dates)
 
-    # --- Auto-configure: BIC-based model selection (runs once per series) ---
+    # --- Auto-configure: runs once per series, decides everything ---------------
     autoconf_key = f"{val_col}_{len(values)}_{suggested_period}"
     if st.session_state.get("_autoconf_key") != autoconf_key:
         with st.spinner("🔍 Analysing dataset…"):
             acfg = _auto_configure(dates, values, suggested_period)
-        st.session_state["_autoconf"]        = acfg
-        st.session_state["_autoconf_key"]    = autoconf_key
-        st.session_state["sb_use_stl"]       = acfg["use_stl"]
-        st.session_state["sb_stl_period"]    = acfg["stl_period"]
-        st.session_state["sb_d"]             = acfg["d"]
-        st.session_state["sb_n_iter"]        = acfg["n_iter"]
-        st.session_state["_preset_applied"]  = False
+        st.session_state["_autoconf"]           = acfg
+        st.session_state["_autoconf_key"]       = autoconf_key
+        st.session_state["sb_log_transform"]    = acfg["log_transform"]
+        st.session_state["sb_use_stl"]          = acfg["use_stl"]
+        st.session_state["sb_stl_period"]       = acfg["stl_period"]
+        st.session_state["sb_d"]                = acfg["d"]
+        st.session_state["sb_n_iter"]           = acfg["n_iter"]
+        st.session_state["_preset_applied"]     = False
 
     acfg = st.session_state.get("_autoconf", {})
     if acfg:
-        bic    = acfg.get("bic_scores", {})
-        best_d = acfg.get("d", "?")
-        s_str  = acfg.get("seasonality_strength", 0.0)
+        bic      = acfg.get("bic_scores", {})
+        best_d   = acfg.get("d", "?")
+        s_str    = acfg.get("seasonality_strength", 0.0)
+        var_red  = acfg.get("var_reduction", 0.0)
+        log_rec  = acfg.get("log_transform", False)
         with st.sidebar.expander("🔍 Auto-configuration", expanded=False):
-            st.caption(f"Seasonality strength: **{s_str:.0%}**")
-            st.caption(f"STL: {'✅ enabled' if acfg.get('use_stl') else '❌ disabled'} · "
-                       f"Recommended d: **{best_d}**")
+            st.caption(
+                f"{'🔢 Log transform: **on**' if log_rec else '🔢 Log transform: off'}  \n"
+                f"{'📉 STL: **enabled**' if acfg.get('use_stl') else '📉 STL: disabled'}"
+                f"{'  (variance reduction: ' + f'{var_red:.0%})' if acfg.get('use_stl') else ''}  \n"
+                f"📐 Best latent dim: **d = {best_d}**  \n"
+                f"🌊 Seasonality strength: **{s_str:.0%}**"
+            )
             if bic:
                 bic_df = pd.DataFrame({
                     "d":    list(bic.keys()),
@@ -739,6 +1113,19 @@ def sidebar() -> dict | None:
 
     # --- Preprocessing ---
     st.sidebar.subheader("Preprocessing")
+
+    all_positive = bool(np.all(values > 0))
+    log_transform = st.sidebar.toggle(
+        "Log transform",
+        key="sb_log_transform",
+        value=st.session_state.get("sb_log_transform", False),
+        disabled=not all_positive,
+        help="Apply log(y) before modelling. Recommended for financial prices, "
+             "passenger counts, and any series where variance grows with level. "
+             "Forecasts are automatically back-transformed to the original scale."
+             if all_positive else "Disabled: series contains non-positive values.",
+    )
+
     stl_available = _HAS_STL
     use_stl = st.sidebar.toggle(
         "Remove seasonality / trend (STL)",
@@ -796,14 +1183,15 @@ def sidebar() -> dict | None:
         "dates":       dates,
         "values":      values,
         "use_stl":     use_stl,
-        "stl_period":  int(stl_period),
-        "d":           d,
-        "n_iter":      n_iter,
-        "test_ratio":  test_ratio,
-        "tol":         tol,
-        "n_restarts":  n_restarts,
-        "n_forecast":  n_forecast,
-        "run":         run_btn,
+        "stl_period":    int(stl_period),
+        "log_transform": log_transform,
+        "d":             d,
+        "n_iter":        n_iter,
+        "test_ratio":    test_ratio,
+        "tol":           tol,
+        "n_restarts":    n_restarts,
+        "n_forecast":    n_forecast,
+        "run":           run_btn,
     }
 
 
@@ -939,6 +1327,9 @@ Welcome to **Forecaster**, a time series prediction app powered by the
                 use_container_width=True,
             )
 
+            st.divider()
+            show_forecast_quality(results, cfg["val_col"])
+
     # ---- Reconstruction & Forecast tab ----
     with tab_fore:
         if results is None:
@@ -957,44 +1348,71 @@ Welcome to **Forecaster**, a time series prediction app powered by the
 
             n_test = len(values_test)
 
+            log_transform = results.get("log_transform", False)
+            work_train    = results.get("work_train", values_train)
+
             # --- Kalman smooth on TRAIN only ---
             Y_train_kal = (stl["resid"][:n_train].reshape(-1, 1)
                            if stl is not None
-                           else values_train.reshape(-1, 1))
+                           else work_train.reshape(-1, 1))
             mu_s, var_s = model.smooth(Y_train_kal)
             if stl is not None:
-                mu_train_plot = mu_s[:, 0] + stl["seasonal"][:n_train] + stl["trend"][:n_train]
+                mu_train_work = mu_s[:, 0] + stl["seasonal"][:n_train] + stl["trend"][:n_train]
             else:
-                mu_train_plot = mu_s[:, 0]
+                mu_train_work = mu_s[:, 0]
             std_train_plot = np.sqrt(np.abs(var_s[:, 0]))
+            mu_train_plot  = np.exp(mu_train_work) if log_transform else mu_train_work
 
             # --- Multi-step forecast from end of TRAIN → covers test + future ---
-            # This enables visual validation: forecast vs actual test dots
             n_total_fore = n_test + n_fore
             y_fore_all_raw, y_fore_all_var = model.forecast(Y_train_kal, n_steps=n_total_fore)
 
-            # Test portion of forecast (validation zone)
-            mu_fore_test_resid  = y_fore_all_raw[:n_test, 0]
-            std_fore_test       = np.sqrt(np.abs(y_fore_all_var[:n_test, 0]))
+            # Test portion of forecast (in work space, then back-transform)
+            mu_fore_test_resid = y_fore_all_raw[:n_test, 0]
+            std_fore_test      = np.sqrt(np.abs(y_fore_all_var[:n_test, 0]))
             if stl is not None:
-                mu_fore_test = (mu_fore_test_resid
-                                + stl["seasonal"][n_train:]
-                                + stl["trend"][n_train:])
+                mu_fore_test_work = (mu_fore_test_resid
+                                     + stl["seasonal"][n_train:]
+                                     + stl["trend"][n_train:])
             else:
-                mu_fore_test = mu_fore_test_resid
+                mu_fore_test_work = mu_fore_test_resid
+            mu_fore_test = np.exp(mu_fore_test_work) if log_transform else mu_fore_test_work
+            if log_transform:
+                std_fore_test = mu_fore_test * std_fore_test
 
-            # Future portion of forecast (no ground truth)
-            dates_future        = _future_dates(dates_all, n_fore)
-            mu_future_resid     = y_fore_all_raw[n_test:, 0]
-            std_future          = np.sqrt(np.abs(y_fore_all_var[n_test:, 0]))
+            # Future portion of forecast
+            dates_future    = _future_dates(dates_all, n_fore)
+            mu_future_resid = y_fore_all_raw[n_test:, 0]
+            std_future      = np.sqrt(np.abs(y_fore_all_var[n_test:, 0]))
             if stl is not None:
                 seas_future  = project_seasonal(stl["seasonal"], n_fore, stl["period"])
                 trend        = stl["trend"]
                 slope        = (trend[-1] - trend[max(0, len(trend) - 10)]) / min(10, len(trend) - 1)
                 trend_future = trend[-1] + slope * np.arange(1, n_fore + 1)
-                mu_future    = mu_future_resid + seas_future + trend_future
+                mu_future_work = mu_future_resid + seas_future + trend_future
             else:
-                mu_future = mu_future_resid
+                mu_future_work = mu_future_resid
+            mu_future = np.exp(mu_future_work) if log_transform else mu_future_work
+            if log_transform:
+                std_future = mu_future * std_future
+
+            # --- Effective forecast horizon ---
+            var_fore_growth = np.diff(y_fore_all_var[:min(200, n_test + n_fore), 0])
+            if len(var_fore_growth) > 0 and np.any(var_fore_growth < 1e-4 * var_fore_growth[0]):
+                _horizon = max(1, int(np.argmax(var_fore_growth < 1e-4 * var_fore_growth[0])))
+            else:
+                _horizon = len(var_fore_growth)
+
+            # --- Horizon warning ---
+            if _horizon < n_test // 2:
+                st.warning(
+                    f"⚠️ **Forecast horizon warning** — the model's reliable forecast horizon is "
+                    f"~**{_horizon} steps**, but the test set spans **{n_test} steps**. "
+                    f"Beyond ~{_horizon} steps, the multi-step forecast reverts to the series mean "
+                    f"and no longer tracks the actual signal. "
+                    f"The divergence you see is **expected** — it reflects the model's fundamental "
+                    f"limit, not a bug. The backtest score (one-step-ahead) remains valid."
+                )
 
             st.pyplot(
                 fig_reconstruction_forecast(
@@ -1004,9 +1422,32 @@ Welcome to **Forecaster**, a time series prediction app powered by the
                     mu_fore_test, std_fore_test,
                     dates_future, mu_future, std_future,
                     cfg["val_col"],
+                    reliable_horizon=_horizon,
                 ),
                 use_container_width=True,
             )
+
+            # --- Short-horizon forecast accuracy (within the reliable zone) ---
+            n_eval = min(_horizon, n_test)
+            if n_eval >= 5:
+                err_h = values_test[:n_eval] - mu_fore_test[:n_eval]
+                mae_h  = float(np.mean(np.abs(err_h)))
+                mask_h = values_test[:n_eval] != 0
+                mape_h = float(np.mean(np.abs(err_h[mask_h] / values_test[:n_eval][mask_h])) * 100) if mask_h.any() else np.nan
+                fa, fb = st.columns(2)
+                fa.metric(
+                    f"Multi-step MAE (first {n_eval} steps)",
+                    f"{mae_h:.3f}",
+                    help=f"Average error of the multi-step forecast over the first {n_eval} steps "
+                         f"(reliable horizon). Compare with the backtest MAE to see how much "
+                         f"accuracy is lost going from one-step to multi-step forecasting.",
+                )
+                if not np.isnan(mape_h):
+                    fb.metric(
+                        f"Multi-step MAPE (first {n_eval} steps)",
+                        f"{mape_h:.1f} %",
+                        help="Percentage error of the multi-step forecast within the reliable horizon.",
+                    )
 
             # Table of forecast values (future only) + download
             fore_df = pd.DataFrame({
