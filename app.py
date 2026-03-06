@@ -186,6 +186,7 @@ DATASET_PRESETS: dict[str, dict] = {
     "btc_usd_daily.csv": {
         "use_stl": False, "stl_period": 1, "log_transform": True, "d": 3, "n_iter": 200, "n_forecast": 30,
     },
+
     "airline_passengers.csv": {
         "use_stl": True, "stl_period": 12, "log_transform": True, "d": 2, "n_iter": 100, "n_forecast": 24,
     },
@@ -429,17 +430,50 @@ def _fmt_date_axis(ax, dates):
     plt.setp(ax.xaxis.get_majorticklabels(), rotation=30, ha="right")
 
 
+# ---------------------------------------------------------------------------
+# Shared visual theme
+# ---------------------------------------------------------------------------
+
+_P = {
+    "obs":   "#1E2A3A",   # deep navy    — observed data
+    "recon": "#2E86DE",   # vivid blue   — Kalman reconstruction
+    "fore":  "#E84855",   # warm red     — forecast
+    "trend": "#F0A500",   # amber        — STL trend
+    "seas":  "#3BB273",   # emerald      — STL seasonal
+    "resid": "#7B5EA7",   # muted purple — residuals
+    "grid":  "#EBEBEB",   # very light gray grid
+}
+
+
+def _style_ax(ax, *, yonly=False):
+    """Clean, minimal axes style."""
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color(_P["grid"])
+    ax.spines["bottom"].set_color(_P["grid"])
+    ax.tick_params(colors="#666666", labelsize=10)
+    ax.xaxis.label.set_color("#444444")
+    ax.yaxis.label.set_color("#444444")
+    ax.title.set_color("#111111")
+    ax.title.set_fontsize(12)
+    ax.title.set_fontweight("semibold")
+    axis = "y" if yonly else "both"
+    ax.grid(True, color=_P["grid"], linewidth=0.9, linestyle="-", axis="y")
+    ax.set_axisbelow(True)
+
+
 def fig_raw(dates, values, val_col: str):
     MAX_PLOT = 3000
     d = _downsample(np.asarray(dates),  MAX_PLOT)
     v = _downsample(np.asarray(values), MAX_PLOT)
-    fig, ax = plt.subplots(figsize=(11, 3.5))
-    ax.plot(pd.to_datetime(d), v, color="steelblue", lw=1)
+    fig, ax = plt.subplots(figsize=(12, 3.5))
+    fig.patch.set_facecolor("white")
+    ax.plot(pd.to_datetime(d), v, color=_P["obs"], lw=1.4, alpha=0.9)
     ax.set_title(f"Raw time series — {val_col}")
-    ax.set_ylabel(val_col)
+    ax.set_ylabel(val_col, fontsize=10)
     _fmt_date_axis(ax, d)
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
+    _style_ax(ax)
+    fig.tight_layout(pad=1.5)
     return fig
 
 
@@ -447,83 +481,87 @@ def fig_stl(dates, values, trend, seasonal, resid, val_col: str):
     MAX_PLOT = 3000
     dt = pd.to_datetime(_downsample(np.asarray(dates), MAX_PLOT))
     panels = [
-        (_downsample(np.asarray(values),   MAX_PLOT), "Observed",  "steelblue"),
-        (_downsample(np.asarray(trend),    MAX_PLOT), "Trend",     "darkorange"),
-        (_downsample(np.asarray(seasonal), MAX_PLOT), "Seasonal",  "green"),
-        (_downsample(np.asarray(resid),    MAX_PLOT), "Residual",  "purple"),
+        (_downsample(np.asarray(values),   MAX_PLOT), "Observed", _P["obs"]),
+        (_downsample(np.asarray(trend),    MAX_PLOT), "Trend",    _P["trend"]),
+        (_downsample(np.asarray(seasonal), MAX_PLOT), "Seasonal", _P["seas"]),
+        (_downsample(np.asarray(resid),    MAX_PLOT), "Residual", _P["resid"]),
     ]
-    fig, axes = plt.subplots(4, 1, figsize=(11, 10),
+    fig, axes = plt.subplots(4, 1, figsize=(12, 10), sharex=True,
                              gridspec_kw={"height_ratios": [2, 1.5, 1.5, 1.5]})
+    fig.patch.set_facecolor("white")
     for ax, (data, label, color) in zip(axes, panels):
-        ax.plot(dt, data, color=color, lw=1)
-        ax.set_ylabel(label)
-        _fmt_date_axis(ax, dt)
-        ax.grid(True, alpha=0.3)
+        ax.plot(dt, data, color=color, lw=1.4)
+        ax.set_ylabel(label, fontsize=10)
+        _style_ax(ax)
     axes[0].set_title(f"STL decomposition — {val_col}")
-    fig.tight_layout()
+    _fmt_date_axis(axes[-1], dt)
+    fig.tight_layout(pad=1.5, h_pad=0.6)
     return fig
 
 
 def fig_backtest(dates_train, values_train, dates_test, values_test,
                  y_pred, y_std, metrics: dict):
     MAX_PLOT = 3000
-    # Downsample train for display; keep test at full resolution (important for validation)
     dtr_d = _downsample(np.asarray(dates_train),  MAX_PLOT)
     vtr_d = _downsample(np.asarray(values_train), MAX_PLOT)
 
-    fig, axes = plt.subplots(3, 1, figsize=(11, 10),
+    fig, axes = plt.subplots(3, 1, figsize=(12, 9),
                              gridspec_kw={"height_ratios": [3, 1.5, 1.5]})
+    fig.patch.set_facecolor("white")
     dt_train = pd.to_datetime(dtr_d)
     dt_test  = pd.to_datetime(dates_test)
 
     # Panel 1 — predictions vs actual
     ax = axes[0]
-    ax.plot(dt_train, vtr_d, color="steelblue", lw=1,
-            label="Train", alpha=0.6)
-    ax.plot(dt_test, values_test, color="steelblue", lw=1.8,
+    ax.plot(dt_train, vtr_d, color=_P["obs"], lw=1.2, alpha=0.35, label="Train")
+    ax.plot(dt_test, values_test, color=_P["obs"], lw=2,
             label="Test (actual)", zorder=4)
-    ax.plot(dt_test, y_pred, color="crimson", lw=1.8, linestyle="--",
-            label="Kalman 1-step", zorder=5)
     ax.fill_between(dt_test, y_pred - 2*y_std, y_pred + 2*y_std,
-                    color="crimson", alpha=0.15, label="±2σ")
-    ax.axvline(dt_test[0], color="gray", linestyle=":", lw=1.2)
-    ax.set_ylabel("Value")
+                    color=_P["fore"], alpha=0.12, zorder=2, label="±2σ")
+    ax.plot(dt_test, y_pred, color=_P["fore"], lw=2, linestyle="--",
+            label="Kalman 1-step", zorder=5)
+    ax.axvline(dt_test[0], color="#CCCCCC", linestyle="--", lw=1, zorder=1)
+    ax.set_ylabel("Value", fontsize=10)
     ax.set_title("One-step-ahead backtest")
-    ax.legend(loc="upper left", fontsize=9)
+    ax.legend(loc="upper left", fontsize=9, framealpha=0.95, edgecolor="#DDDDDD")
     _fmt_date_axis(ax, np.concatenate([dates_train, dates_test]))
-    ax.grid(True, alpha=0.3)
+    _style_ax(ax)
+    metric_str = "   ".join(f"{k}  {v:.3f}" for k, v in metrics.items())
+    ax.text(0.99, 0.97, metric_str, transform=ax.transAxes,
+            fontsize=9, color="#444444", ha="right", va="top",
+            bbox=dict(facecolor="#F7F7F7", alpha=0.95, edgecolor="#DDDDDD",
+                      boxstyle="round,pad=0.45"))
 
-    metric_str = "  |  ".join(f"{k}: {v:.3f}" for k, v in metrics.items())
-    ax.text(0.01, 0.04, metric_str, transform=ax.transAxes,
-            fontsize=8.5, color="darkred",
-            bbox=dict(facecolor="white", alpha=0.85, edgecolor="none"))
-
-    # Panel 2 — absolute error
+    # Panel 2 — absolute error (area)
     ax2 = axes[1]
     abs_err = np.abs(values_test - y_pred)
-    ax2.bar(dt_test, abs_err, color="orange", alpha=0.7, width=1.5)
-    ax2.axhline(abs_err.mean(), color="red", lw=1.5, linestyle="--",
+    ax2.fill_between(dt_test, 0, abs_err, color=_P["fore"], alpha=0.20)
+    ax2.plot(dt_test, abs_err, color=_P["fore"], lw=1.2)
+    ax2.axhline(abs_err.mean(), color=_P["fore"], lw=1.5, linestyle="--",
                 label=f"MAE = {abs_err.mean():.3f}")
-    ax2.set_ylabel("|Error|")
-    ax2.set_title("Absolute prediction error")
-    ax2.legend(fontsize=9)
+    ax2.set_ylabel("|Error|", fontsize=10)
+    ax2.set_title("Absolute error")
+    ax2.legend(fontsize=9, framealpha=0.95, edgecolor="#DDDDDD")
     _fmt_date_axis(ax2, dates_test)
-    ax2.grid(True, alpha=0.3)
+    _style_ax(ax2)
 
     # Panel 3 — normalised residuals
     ax3 = axes[2]
     residuals = (values_test - y_pred) / np.where(y_std > 0, y_std, 1e-9)
-    ax3.plot(dt_test, residuals, color="purple", lw=0.9, alpha=0.9)
-    ax3.axhline( 2, color="red", lw=1, linestyle="--", alpha=0.6)
-    ax3.axhline(-2, color="red", lw=1, linestyle="--", alpha=0.6, label="±2σ")
-    ax3.axhline(0, color="black", lw=0.8)
-    ax3.set_ylabel("Normalised residual")
-    ax3.set_title("Normalised residuals  (≈ N(0,1) if model is well-fitted)")
-    ax3.legend(fontsize=9)
+    ax3.fill_between(dt_test, residuals, 0,
+                     where=np.abs(residuals) > 2,
+                     color=_P["fore"], alpha=0.25, label="Outside ±2σ")
+    ax3.plot(dt_test, residuals, color=_P["resid"], lw=1.2)
+    ax3.axhline( 2, color="#BBBBBB", lw=1, linestyle="--")
+    ax3.axhline(-2, color="#BBBBBB", lw=1, linestyle="--", label="±2σ bounds")
+    ax3.axhline(0,  color="#999999", lw=0.8)
+    ax3.set_ylabel("Norm. residual", fontsize=10)
+    ax3.set_title("Normalised residuals  (≈ N(0,1) if well-fitted)")
+    ax3.legend(fontsize=9, framealpha=0.95, edgecolor="#DDDDDD")
     _fmt_date_axis(ax3, dates_test)
-    ax3.grid(True, alpha=0.3)
+    _style_ax(ax3)
 
-    fig.tight_layout()
+    fig.tight_layout(pad=1.5, h_pad=1.2)
     return fig
 
 
@@ -556,15 +594,15 @@ def fig_reconstruction_forecast(
 
     reliable_horizon : if > 0 and < n_test, draw a shaded unreliable zone beyond that point.
     """
-    C_OBS   = "#2d2d2d"
-    C_RECON = "#2196F3"
-    C_FORE  = "#E53935"
+    C_OBS   = _P["obs"]
+    C_RECON = _P["recon"]
+    C_FORE  = _P["fore"]
 
-    MAX_PLOT = 2000   # max points per series for readable rendering
+    MAX_PLOT = 2000
 
-    fig, ax = plt.subplots(figsize=(13, 5))
+    fig, ax = plt.subplots(figsize=(14, 5))
+    fig.patch.set_facecolor("white")
 
-    # Downsample for display only (model data unchanged)
     dtr  = _downsample(np.asarray(dates_train),  MAX_PLOT)
     vtr  = _downsample(np.asarray(values_train), MAX_PLOT)
     mtr  = _downsample(np.asarray(mu_train),     MAX_PLOT)
@@ -578,93 +616,107 @@ def fig_reconstruction_forecast(
     dt_test   = pd.to_datetime(dte)
     dt_future = pd.to_datetime(dates_future)
 
-    # Observed — train as line, test as scatter dots (ground truth for validation)
-    ax.plot(dt_train, vtr, color=C_OBS, lw=1.2, alpha=0.7,
+    # Observed train (line) + test (scatter)
+    ax.plot(dt_train, vtr, color=C_OBS, lw=1.3, alpha=0.45,
             label="Observed (train)", zorder=1)
-    ax.scatter(dt_test, vte, color=C_OBS, s=18, alpha=0.85, zorder=4,
-               label="Observed (test — ground truth)")
+    ax.scatter(dt_test, vte, color=C_OBS, s=14, alpha=0.7, zorder=4,
+               label="Observed (test)")
 
-    # Kalman smooth on train
-    ax.fill_between(dt_train,
-                    mtr - 2 * str_,
-                    mtr + 2 * str_,
-                    color=C_RECON, alpha=0.15, label="±2σ reconstruction", zorder=2)
-    ax.plot(dt_train, mtr, color=C_RECON, lw=1.8,
-            label="Reconstruction (smooth)", zorder=3)
+    # Kalman reconstruction on train
+    ax.fill_between(dt_train, mtr - 2*str_, mtr + 2*str_,
+                    color=C_RECON, alpha=0.10, zorder=2)
+    ax.plot(dt_train, mtr, color=C_RECON, lw=2,
+            label="Reconstruction", zorder=3)
 
-    # Multi-step forecast over test period (validation zone)
-    ax.fill_between(dt_test,
-                    mft - 2 * sft,
-                    mft + 2 * sft,
-                    color=C_FORE, alpha=0.18, label="±2σ forecast", zorder=2)
+    # Multi-step forecast over test period
+    ax.fill_between(dt_test, mft - 2*sft, mft + 2*sft,
+                    color=C_FORE, alpha=0.12, zorder=2)
     ax.plot(dt_test, mft, color=C_FORE, lw=2, linestyle="--",
             label="Forecast (validation)", zorder=3)
 
-    # Shade unreliable zone if horizon < n_test
+    # Unreliable zone
     if reliable_horizon > 0 and reliable_horizon < len(dates_test):
         dt_horizon = pd.to_datetime(dates_test[reliable_horizon])
         ax.axvspan(dt_horizon, dt_future[-1],
-                   color="gray", alpha=0.10, zorder=0,
+                   color="#BBBBBB", alpha=0.13, zorder=0,
                    label=f"Beyond reliable horizon (~{reliable_horizon} steps)")
-        ax.axvline(dt_horizon, color="gray", linestyle="--", lw=1.2, zorder=5)
+        ax.axvline(dt_horizon, color="#AAAAAA", linestyle="--", lw=1, zorder=5)
 
-    # Pure future forecast (already short — no downsampling needed)
-    ax.fill_between(dt_future,
-                    y_future - 2 * std_future,
-                    y_future + 2 * std_future,
-                    color=C_FORE, alpha=0.10, zorder=2)
+    # Pure future forecast
+    ax.fill_between(dt_future, y_future - 2*std_future, y_future + 2*std_future,
+                    color=C_FORE, alpha=0.08, zorder=2)
     ax.plot(dt_future, y_future, color=C_FORE, lw=2, linestyle="--",
             label="Forecast (future)", zorder=3)
 
-    # Vertical separators
-    ax.axvline(dt_test[0],   color="#888",  linestyle=":", lw=1.2, label="train | test")
-    ax.axvline(dt_future[0], color=C_FORE,  linestyle=":", lw=1.2, label="test | future")
+    # Zone separators
+    ax.axvline(dt_test[0],   color="#CCCCCC", linestyle="--", lw=1, zorder=1)
+    ax.axvline(dt_future[0], color="#CCCCCC", linestyle="--", lw=1, zorder=1)
 
-    # Anchor y-axis on observed data range only
+    # Zone labels at top
+    ylims = ax.get_ylim()
+    y_label = ylims[1] - 0.02 * (ylims[1] - ylims[0])
+    for x_mid, label in [
+        (dt_train[len(dt_train)//2],  "Train"),
+        (dt_test[len(dt_test)//2],    "Validation"),
+        (dt_future[len(dt_future)//2],"Forecast"),
+    ]:
+        ax.text(x_mid, y_label, label, ha="center", va="top",
+                fontsize=9, color="#888888", style="italic")
+
+    # y-axis anchor on observed data
     values_all = np.concatenate([values_train, values_test])
     y_lo = float(np.nanmin(values_all))
     y_hi = float(np.nanmax(values_all))
-    margin = 0.12 * (y_hi - y_lo) if y_hi > y_lo else 1.0
+    margin = 0.15 * (y_hi - y_lo) if y_hi > y_lo else 1.0
     ax.set_ylim(y_lo - margin, y_hi + margin)
 
-    ax.set_ylabel(val_col)
+    ax.set_ylabel(val_col, fontsize=11)
     ax.set_title(f"Kalman-EM — Reconstruction & Forecast — {val_col}")
-    ax.legend(loc="upper left", fontsize=9)
+    ax.legend(loc="upper left", fontsize=9, framealpha=0.95,
+              edgecolor="#DDDDDD", ncol=2)
     all_dates = np.concatenate([dates_train, dates_test, dates_future])
     _fmt_date_axis(ax, all_dates)
-    ax.grid(True, alpha=0.25)
-    fig.tight_layout()
+    _style_ax(ax)
+    fig.tight_layout(pad=1.5)
     return fig
 
 
 def fig_loglik(log_liks):
-    fig, ax = plt.subplots(figsize=(7, 3))
-    ax.plot(log_liks, color="steelblue", lw=1.5, marker="o", markersize=2)
-    ax.set_xlabel("EM iteration")
-    ax.set_ylabel("Log-likelihood")
+    fig, ax = plt.subplots(figsize=(8, 3.2))
+    fig.patch.set_facecolor("white")
+    ax.fill_between(range(len(log_liks)), log_liks, min(log_liks),
+                    color=_P["recon"], alpha=0.10)
+    ax.plot(log_liks, color=_P["recon"], lw=2)
+    ax.set_xlabel("EM iteration", fontsize=10)
+    ax.set_ylabel("Log-likelihood", fontsize=10)
     ax.set_title("EM convergence")
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
+    _style_ax(ax)
+    fig.tight_layout(pad=1.5)
     return fig
 
 
 def fig_matrix(M: np.ndarray, title: str):
     """Heatmap of a 2-D matrix."""
-    fig, ax = plt.subplots(figsize=(max(2.5, M.shape[1] * 0.8 + 1),
-                                    max(2.0, M.shape[0] * 0.8 + 0.8)))
-    im = ax.imshow(M, cmap="RdBu_r", aspect="auto")
-    fig.colorbar(im, ax=ax, shrink=0.8)
-    ax.set_title(title, fontsize=10)
+    fig, ax = plt.subplots(figsize=(max(3.0, M.shape[1] * 1.1 + 1),
+                                    max(2.5, M.shape[0] * 1.1 + 0.8)))
+    fig.patch.set_facecolor("white")
+    vmax = float(np.abs(M).max()) or 1.0
+    im = ax.imshow(M, cmap="RdBu_r", aspect="auto", vmin=-vmax, vmax=vmax)
+    cb = fig.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
+    cb.ax.tick_params(labelsize=8, colors="#555555")
+    ax.set_title(title, fontsize=11, fontweight="semibold", color="#111111")
     for i in range(M.shape[0]):
         for j in range(M.shape[1]):
-            ax.text(j, i, f"{M[i, j]:.4f}", ha="center", va="center",
-                    fontsize=8,
-                    color="white" if abs(M[i, j]) > 0.6 * np.abs(M).max() else "black")
+            ax.text(j, i, f"{M[i, j]:.3f}", ha="center", va="center",
+                    fontsize=9,
+                    color="white" if abs(M[i, j]) > 0.55 * vmax else "#222222")
     ax.set_xticks(range(M.shape[1]))
     ax.set_yticks(range(M.shape[0]))
-    ax.set_xticklabels([f"j={k}" for k in range(M.shape[1])], fontsize=8)
-    ax.set_yticklabels([f"i={k}" for k in range(M.shape[0])], fontsize=8)
-    fig.tight_layout()
+    ax.set_xticklabels([f"j={k}" for k in range(M.shape[1])], fontsize=9)
+    ax.set_yticklabels([f"i={k}" for k in range(M.shape[0])], fontsize=9)
+    ax.spines[:].set_visible(False)
+    ax.tick_params(length=0)
+    fig.tight_layout(pad=1.5)
     return fig
 
 
@@ -1406,12 +1458,13 @@ Welcome to **Forecaster**, a time series prediction app powered by the
             # --- Horizon warning ---
             if _horizon < n_test // 2:
                 st.warning(
-                    f"⚠️ **Forecast horizon warning** — the model's reliable forecast horizon is "
-                    f"~**{_horizon} steps**, but the test set spans **{n_test} steps**. "
-                    f"Beyond ~{_horizon} steps, the multi-step forecast reverts to the series mean "
-                    f"and no longer tracks the actual signal. "
-                    f"The divergence you see is **expected** — it reflects the model's fundamental "
-                    f"limit, not a bug. The backtest score (one-step-ahead) remains valid."
+                    f"⚠️ **Model reliability warning** — this model can reliably forecast only "
+                    f"~**{_horizon} steps** ahead (based on its learned dynamics). "
+                    f"The validation zone (test set) spans **{n_test} steps**, which is much longer — "
+                    f"beyond ~{_horizon} steps the forecast reverts to the series mean and no longer tracks the actual signal. "
+                    f"The divergence in the validation zone is **expected**, not a bug.\n\n"
+                    f"*Your **Future forecast** setting ({n_fore} steps) is a separate control — "
+                    f"it sets how many steps are projected beyond the end of your data.*"
                 )
 
             st.pyplot(
